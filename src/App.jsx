@@ -6,23 +6,23 @@ import { auth } from "./firebase";
 
 const BR_HOL = new Set(["2025-01-01","2025-04-18","2025-04-21","2025-05-01","2025-06-19","2025-09-07","2025-10-12","2025-11-02","2025-11-15","2025-12-25","2026-01-01","2026-04-03","2026-04-21","2026-05-01","2026-06-04","2026-09-07","2026-10-12","2026-11-02","2026-11-15","2026-12-25","2027-01-01","2027-04-02","2027-04-21","2027-05-01","2027-05-27","2027-09-07","2027-10-12","2027-11-02","2027-11-15","2027-12-25"]);
 const T={
-  bg:      "hsl(222.2,84%,4.9%)",
-  surface: "hsl(222.2,84%,7%)",
-  card:    "hsl(217.2,32.6%,11%)",
-  hover:   "hsl(217.2,32.6%,17.5%)",
-  accent:  "hsl(224.3,76.3%,48%)",
-  accentHover:"hsl(224.3,76.3%,55%)",
-  white:   "hsl(210,40%,98%)",
-  gray:    "hsl(215,20.2%,65.1%)",
-  muted:   "hsl(215.4,16.3%,40%)",
-  danger:  "hsl(0,84.2%,60.2%)",
-  dangerDark:"hsl(0,62.8%,30.6%)",
-  warning: "hsl(38,92%,50%)",
-  success: "hsl(142.1,70.6%,45.3%)",
-  purple:  "hsl(262,83%,58%)",
-  sidebar: "hsl(240,5.9%,10%)",
-  sidebarAccent:"hsl(240,3.7%,15.9%)",
-  border:  "hsl(217.2,32.6%,17.5%)",
+  bg:      "hsl(228,30%,13%)",
+  surface: "hsl(228,28%,16%)",
+  card:    "hsl(228,26%,18%)",
+  hover:   "hsl(228,24%,22%)",
+  accent:  "#00b4d8",
+  accentHover:"#00d4f8",
+  white:   "#f0f4ff",
+  gray:    "#8892a4",
+  muted:   "#5a6478",
+  danger:  "#ff5252",
+  dangerDark:"hsl(0,62.8%,18%)",
+  warning: "#ffab40",
+  success: "#00e676",
+  purple:  "#b388ff",
+  sidebar: "hsl(228,35%,11%)",
+  sidebarAccent:"hsl(228,30%,16%)",
+  border:  "hsl(228,24%,22%)",
   font:    "'Segoe UI',system-ui,sans-serif",
 };
 const TODAY=new Date().toISOString().slice(0,10);
@@ -118,13 +118,33 @@ const MODULES=[
 const MODULE_BY_ID=Object.fromEntries(MODULES.map(m=>[m.id,m]));
 const GROUPS=[...new Set(MODULES.map(m=>m.group))];
 
-const BADGES={OK:{bg:"hsl(142.1,70.6%,12%)",fg:"hsl(142.1,70.6%,55%)",txt:"✓ OK"},ONTIME:{bg:"hsl(142.1,70.6%,12%)",fg:"hsl(142.1,70.6%,55%)",txt:"NO PRAZO"},LATE:{bg:"hsl(0,62.8%,18%)",fg:"hsl(0,84.2%,65%)",txt:"ATRASADO"},DUP:{bg:"hsl(38,92%,15%)",fg:"hsl(38,92%,60%)",txt:"DUPLICATA"},SEM_CAN:{bg:"hsl(0,62.8%,18%)",fg:"hsl(0,84.2%,65%)",txt:"SEM CAN"},SLA_CAN:{bg:"hsl(0,62.8%,18%)",fg:"hsl(0,84.2%,65%)",txt:"⏰ CAN"},SLA_BCK:{bg:"hsl(0,62.8%,18%)",fg:"hsl(0,84.2%,65%)",txt:"⏰ BCK"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
+const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
 const Badge=({type})=>{const s=BADGES[type]||BADGES.PEND;return<span style={{display:"inline-block",padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:700,letterSpacing:.5,background:s.bg,color:s.fg,marginRight:3,whiteSpace:"nowrap"}}>{s.txt}</span>;};
 
 const Login=()=>{
   const[email,setEmail]=useState("");const[pass,setPass]=useState("");const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
   const go=async()=>{if(!email||!pass){setErr("Preencha e-mail e senha.");return;}setBusy(true);setErr("");try{await signInWithEmailAndPassword(auth,email,pass);}catch(e){const m={"auth/invalid-credential":"Credenciais inválidas.","auth/user-not-found":"Usuário não encontrado.","auth/wrong-password":"Senha incorreta.","auth/too-many-requests":"Muitas tentativas. Aguarde."};setErr(m[e.code]||"Erro ao autenticar.");setBusy(false);}};
-  return(<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`linear-gradient(135deg, hsl(222.2,84%,3%) 0%, hsl(224.3,76.3%,15%) 50%, hsl(222.2,84%,4.9%) 100%)`,fontFamily:T.font}}><div style={{width:380,padding:"48px 40px",background:T.surface,borderRadius:16,boxShadow:"0 24px 80px rgba(0,0,0,.8)"}}><div style={{textAlign:"center",marginBottom:36}}><div style={{width:60,height:60,borderRadius:"50%",background:T.accent,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,marginBottom:20,boxShadow:`0 8px 32px ${T.accent}55`}}>◈</div><h1 style={{margin:0,fontSize:24,fontWeight:900,color:T.white,letterSpacing:-.5}}>Painel de Ajustes</h1><p style={{margin:"8px 0 0",fontSize:12,color:T.gray,letterSpacing:.5}}>CONTROLE · AUDITORIA · ANÁLISE</p></div>{[{l:"E-MAIL",t:"email",v:email,s:setEmail,ph:"usuario@empresa.com.br"},{l:"SENHA",t:"password",v:pass,s:setPass,ph:"••••••••",ip:true}].map(({l,t,v,s,ph,ip})=>(<div key={l} style={{marginBottom:16}}><label style={{display:"block",fontSize:11,fontWeight:700,color:T.gray,marginBottom:8,letterSpacing:1}}>{l}</label><input type={t} value={v} onChange={e=>{s(e.target.value);if(ip)setErr("");}} onKeyDown={e=>e.key==="Enter"&&go()} placeholder={ph} style={{width:"100%",padding:"14px 16px",background:T.card,border:`1px solid ${ip&&err?T.danger:T.border}`,borderRadius:8,color:T.white,fontSize:14,outline:"none",boxSizing:"border-box"}}/></div>))}{err&&<p style={{color:T.danger,fontSize:12,margin:"-8px 0 14px"}}>{err}</p>}<button onClick={go} disabled={busy} style={{width:"100%",padding:"14px",background:busy?T.muted:T.accent,color:busy?T.gray:"#000",border:"none",borderRadius:50,fontSize:15,fontWeight:900,cursor:busy?"not-allowed":"pointer"}}>{busy?"Verificando…":"ENTRAR"}</button><p style={{textAlign:"center",fontSize:11,color:T.muted,margin:"24px 0 0"}}>Uso Interno · Acesso Restrito</p></div></div>);
+  return(<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`linear-gradient(135deg,hsl(228,35%,8%) 0%,hsl(228,30%,13%) 100%)`,fontFamily:T.font}}>
+  <div style={{width:420,padding:"48px 40px",background:T.surface,borderRadius:20,boxShadow:"0 24px 80px rgba(0,0,0,.6)",border:`1px solid ${T.border}`}}>
+    <div style={{textAlign:"center",marginBottom:36}}>
+      <div style={{width:72,height:72,borderRadius:18,background:"linear-gradient(135deg,#00b4d8,#00e676)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:32,marginBottom:18,boxShadow:"0 8px 24px rgba(0,180,216,.4)"}}>◈</div>
+      <h1 style={{margin:0,fontSize:26,fontWeight:800,color:T.accent,letterSpacing:-.5}}>Painel de Ajustes</h1>
+      <p style={{margin:"6px 0 0",fontSize:12,color:T.gray,letterSpacing:.5}}>CONTROLE · AUDITORIA · ANÁLISE</p>
+    </div>
+    {[{l:"E-mail",t:"email",v:email,s:setEmail,ph:"seu.email@empresa.com.br"},{l:"Senha",t:"password",v:pass,s:setPass,ph:"Digite sua senha",ip:true}].map(({l,t,v,s,ph,ip})=>(
+      <div key={l} style={{marginBottom:16}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:T.gray,marginBottom:8}}>{l}</label>
+        <input type={t} value={v} onChange={e=>{s(e.target.value);if(ip)setErr("");}} onKeyDown={e=>e.key==="Enter"&&go()} placeholder={ph}
+          style={{width:"100%",padding:"14px 16px",background:T.card,border:`1.5px solid ${ip&&err?T.danger:T.border}`,borderRadius:10,color:T.white,fontSize:14,outline:"none",boxSizing:"border-box",WebkitTextFillColor:T.white}}/>
+      </div>
+    ))}
+    {err&&<p style={{color:T.danger,fontSize:12,margin:"-8px 0 14px"}}>{err}</p>}
+    <button onClick={go} disabled={busy} style={{width:"100%",padding:"15px",background:busy?T.muted:"linear-gradient(to right,#00b4d8,#00e676)",color:busy?T.gray:"#0a1628",border:"none",borderRadius:50,fontSize:16,fontWeight:800,cursor:busy?"not-allowed":"pointer",boxShadow:busy?"none":"0 4px 20px rgba(0,180,216,.4)",letterSpacing:.5,marginTop:4}}>
+      {busy?"Verificando…":"Entrar"}
+    </button>
+    <p style={{textAlign:"center",fontSize:11,color:T.muted,margin:"20px 0 0"}}>Uso Interno · Acesso Restrito</p>
+  </div>
+</div>);
 };
 
 const Sidebar=({activeId,onSelect})=>(<div style={{width:240,background:T.sidebar,flexShrink:0,overflowY:"auto",paddingTop:8}}>{GROUPS.map(g=>(<div key={g}><div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:1.5,padding:"16px 24px 6px",textTransform:"uppercase"}}>{g}</div>{MODULES.filter(m=>m.group===g).map(m=>(<button key={m.id} onClick={()=>onSelect(m.id)} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"10px 24px",border:"none",textAlign:"left",cursor:"pointer",background:activeId===m.id?T.sidebarAccent+"":"transparent",color:activeId===m.id?T.white:T.gray,fontSize:13,fontWeight:activeId===m.id?700:400,borderLeft:activeId===m.id?`3px solid ${T.accent}`:"3px solid transparent"}}><span style={{fontSize:16}}>{m.icon}</span><span>{m.name}</span></button>))}</div>))}</div>);
@@ -142,7 +162,7 @@ const View5125=({results,onExport})=>{
   const TH=({c})=><th style={{padding:"11px 12px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
   return(<div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:12,marginBottom:24}}>
-      {[[stats.total,"Total",T.accent,"📊"],[stats.ok,"OK",T.accent,"✅"],[stats.issues,"Pendência",T.danger,"⚠️"],[stats.dup,"Duplicata",T.warning,"🔁"],[stats.slaCan,"SLA CAN",T.danger,"⏰"],[stats.slaBck,"SLA BCK",T.danger,"⏰"],[stats.semCan,"Sem CAN",T.purple,"❌"]].map(([v,l,c,ic])=><Stat key={l} label={l} value={v} color={c} icon={ic}/>)}
+      {[[stats.total,"Total",T.accent,"📊"],[stats.ok,"OK",T.success,"✅"],[stats.issues,"Pendência",T.danger,"⚠️"],[stats.dup,"Duplicata",T.warning,"🔁"],[stats.slaCan,"SLA CAN",T.danger,"⏰"],[stats.slaBck,"SLA BCK",T.danger,"⏰"],[stats.semCan,"Sem CAN",T.purple,"❌"]].map(([v,l,c,ic])=><Stat key={l} label={l} value={v} color={c} icon={ic}/>)}
     </div>
     <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,flexWrap:"wrap"}}>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por referência, EC, autorização, analista…" style={{flex:1,minWidth:200,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
@@ -164,10 +184,10 @@ const View5125=({results,onExport})=>{
                 <td style={{padding:"9px 12px",fontWeight:700,color:T.white}}>{fV(r.valor)}</td>
                 <td style={{padding:"9px 12px",color:T.white}}>{fD(r.od)}</td>
                 <td style={{padding:"9px 12px",color:T.gray}}>{r.analista||"—"}</td>
-                <td style={{padding:"9px 12px",color:r.canOk===false?T.danger:r.canOk?T.accent:T.muted}}>{fD(r.canDate)}</td>
+                <td style={{padding:"9px 12px",color:r.canOk===false?T.danger:r.canOk?T.success:T.muted}}>{fD(r.canDate)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.canDl)}</td>
                 <td style={{padding:"9px 12px"}}><Badge type={r.canOk===true?"ONTIME":r.canOk===false?"LATE":"PEND"}/></td>
-                <td style={{padding:"9px 12px",color:r.bckOk===false?T.danger:r.bckOk?T.accent:T.muted}}>{fD(r.bd)}</td>
+                <td style={{padding:"9px 12px",color:r.bckOk===false?T.danger:r.bckOk?T.success:T.muted}}>{fD(r.bd)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.bckDl)}</td>
                 <td style={{padding:"9px 12px"}}><Badge type={r.bckOk===true?"ONTIME":r.bckOk===false?"LATE":"PEND"}/></td>
                 <td style={{padding:"9px 12px"}}>{r.ok?<Badge type="OK"/>:r.issues.map(t=><Badge key={t} type={t}/>)}</td>

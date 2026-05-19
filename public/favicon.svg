@@ -1,4 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00b4d8"/>
+      <stop offset="100%" stop-color="#00e676"/>
+    </linearGradient>
+  </defs>
   <rect width="32" height="32" rx="8" fill="#1a1d2e"/>
-  <text x="16" y="23" text-anchor="middle" font-size="20" font-family="Segoe UI,sans-serif" fill="#00b4d8" font-weight="900">◈</text>
+  <rect x="4" y="4" width="24" height="24" rx="5" fill="url(#g)"/>
+  <polygon points="16,7 22,13 16,19 10,13" fill="none" stroke="#0a1628" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="16" cy="13" r="2.2" fill="#0a1628"/>
 </svg>
