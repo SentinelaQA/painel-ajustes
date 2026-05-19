@@ -12,14 +12,14 @@ const normStr=s=>(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLower
 const getCol=(row,...keys)=>{const rk=Object.keys(row);for(const k of keys){if(row[k]!==undefined&&row[k]!==null&&String(row[k]).trim()!=="")return String(row[k]).trim();const f=rk.find(r=>normStr(r)===normStr(k));if(f&&row[f]!==undefined&&row[f]!==null&&String(row[f]).trim()!=="")return String(row[f]).trim();}return "";};
 const getIdx=(row,i)=>{const v=Object.values(row)[i];return v!==undefined&&v!==null?String(v).trim():"";};
 const parseD=s=>{if(!s)return null;s=String(s).trim();if(/^\d{2}\/\d{2}\/\d{4}/.test(s)){const[d,m,y]=s.split("/");return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);return null;};
-const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();const d=parseD(s);if(d)return d;const n=parseFloat(s);if(!isNaN(n)&&n>40000&&n<60000){const dt=new Date(Math.round((n-25569)*86400*1000));return dt.toISOString().slice(0,10);}try{const dt=new Date(s);if(!isNaN(dt)&&String(s).length>6)return dt.toISOString().slice(0,10);}catch(e){}return null;};
+const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();if(!s)return null;const d=parseD(s);if(d)return d;const n=parseFloat(s);if(!isNaN(n)&&n>40000&&n<60000){try{const dt=new Date(Math.floor((n-25569)*86400*1000));if(!isNaN(dt.getTime()))return dt.toISOString().slice(0,10);}catch(e){}}try{const dt=new Date(s);if(!isNaN(dt.getTime())){const iso=dt.toISOString().slice(0,10);if(iso>="2000-01-01"&&iso<="2035-12-31")return iso;}}catch(e){}return null;};
 const normRef=s=>{if(!s&&s!==0)return"";const n=parseFloat(String(s));if(!isNaN(n)&&n>0)return String(Math.round(n));return String(s).trim();};
-const addBiz=(ds,n)=>{if(!ds)return null;const dt=new Date(ds+"T12:00:00Z");let c=0;while(c<n){dt.setUTCDate(dt.getUTCDate()+1);const k=dt.toISOString().slice(0,10),w=dt.getUTCDay();if(w!==0&&w!==6&&!BR_HOL.has(k))c++;}return dt.toISOString().slice(0,10);};
+const addBiz=(ds,n)=>{if(!ds)return null;try{const dt=new Date(ds+"T12:00:00Z");if(isNaN(dt.getTime()))return null;let c=0;while(c<n){dt.setUTCDate(dt.getUTCDate()+1);const k=dt.toISOString().slice(0,10),w=dt.getUTCDay();if(w!==0&&w!==6&&!BR_HOL.has(k))c++;}return dt.toISOString().slice(0,10);}catch(e){return null;}};
 const fD=s=>{if(!s)return"—";const[y,m,d]=s.split("-");return`${d}/${m}/${y}`;};
 const pV=s=>{if(!s)return 0;return parseFloat(String(s).replace(/\./g,"").replace(",","."))||0;};
 const fV=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 
-const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array",cellDates:true});const ws=wb.Sheets[wb.SheetNames[0]];cb(XLSX.utils.sheet_to_json(ws,{defval:"",raw:false}));};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
+const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];cb(XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}));};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
 
 function analyze5125(gaRows,ctrlRows){
   const canByProt={},bckByRef={},dupTrack={};
@@ -31,14 +31,25 @@ function analyze5125(gaRows,ctrlRows){
       const auth=(getCol(r,"Autorizacao","Autorizacao","Autoriza\u00e7\u00e3o","Autorizacao")||getIdx(r,28)).toUpperCase();
       const sd=parseAny(getCol(r,"Data da venda","DATA DA VENDA","Data da Venda")||getIdx(r,27));
       const cd=parseAny(getCol(r,"Data de criacao","Data de Cria\u00e7\u00e3o","Data de criacao")||getIdx(r,11));
-      if(prot)canByProt[prot]={...r,_canDate:cd};
-      if(auth&&sd){const k=`${ec}|${auth}|${sd}`;if(!dupTrack[k])dupTrack[k]=[];dupTrack[k].push(prot||"?");}
+      if(prot){
+        // Cancelamento CAN normal
+        canByProt[prot]={...r,_canDate:cd};
+        if(auth&&sd){const k=`${ec}|${auth}|${sd}`;if(!dupTrack[k])dupTrack[k]=[];dupTrack[k].push(prot||"?");}
+      } else {
+        // Ajuste crédito C962 feito no CAN (novo fluxo GA)
+        const obs=getCol(r,"Observacoes","Observa\u00e7\u00f5es","Observações")||getIdx(r,12);
+        const codAjuste=getIdx(r,8);
+        const m=obs.match(/REF\.\s*(\d+)/i);
+        if(m&&cd&&(codAjuste.includes("962")||m)&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
+          bckByRef[m[1]]={date:cd,row:r,obs,dept:"CAN"};
+      }
     }
     if(dep==="BCK"){
+      // Ajuste crédito C962 feito no SEC (fluxo antigo)
       const obs=getCol(r,"Observacoes","Observa\u00e7\u00f5es","Observações")||getIdx(r,12);
       const cd=parseAny(getCol(r,"Data de criacao","Data de Cria\u00e7\u00e3o","Data de criacao")||getIdx(r,11));
       const m=obs.match(/REF\.\s*(\d+)/i);
-      if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]]>cd))bckByRef[m[1]]=cd;
+      if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))bckByRef[m[1]]={date:cd,row:r,obs,dept:"BCK"};
     }
   });
   const dupProts=new Set();
@@ -47,13 +58,16 @@ function analyze5125(gaRows,ctrlRows){
     const ref=normRef(getCol(c,"REFERENCIA","Referencia","REFER\u00caNCIA","Refer\u00eancia"));
     const ec=getCol(c,"ESTABELECIMENTO","Estabelecimento");
     const auth=getCol(c,"AUTORIZACAO","Autoriza\u00e7\u00e3o","Autorizacao","AUTORIZACAO","AUTORIZA\u00c7\u00c3O");
-    const sd=parseAny(getCol(c,"DATA DA VENDA","Data da Venda"));
     const od=parseAny(getCol(c,"DATA","DATA ABERTURA","Data Abertura","Data de Abertura"));
     const bdCtrl=parseAny(getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito","DATA DO AJUSTE A CR\u00c9DITO"));
-    const bd=bdCtrl||bckByRef[ref]||null;
+    const bckRec=bckByRef[ref]||null;
+    const bd=bdCtrl||bckRec?.date||null;
     const valor=pV(getCol(c,"VALOR DA TRANSA\u00c7\u00c3O","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
     const cval=pV(getCol(c,"VALOR DO CANCELAMENTO","Valor do Cancelamento"));
+    const obs=getCol(c,"OBSERVA\u00c7\u00c3O","OBSERVACAO","Observação","Observacao");
     const gaRec=canByProt[ref]||null;
+    // Sale date from GA CAN record (not in control file)
+    const sd=gaRec?parseAny(getCol(gaRec,"Data da venda","DATA DA VENDA")||getIdx(gaRec,27)):null;
     const canDate=gaRec?._canDate||null;
     const canDl=addBiz(od,2);
     const bckDl=canDate?addBiz(canDate,2):null;
@@ -65,7 +79,7 @@ function analyze5125(gaRows,ctrlRows){
     if(!gaRec)issues.push("SEM_CAN");
     else if(canOk===false)issues.push("SLA_CAN");
     if(bckOk===false)issues.push("SLA_BCK");
-    return{ref,ec,auth,sd,od,bd,valor,cval,analista:getCol(c,"ANALISTA","Analista"),ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),trans3943:getCol(c,"TRANSFERIDO PARA 3943","Transferido para 3943"),canDate,canDl,canOk,bckDl,bckOk,isDup,issues,ok:issues.length===0,_ga:gaRec,_c:c};
+    return{ref,ec,auth,sd,od,bd,valor,cval,obs,analista:getCol(c,"ANALISTA","Analista"),ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),trans3943:getCol(c,"TRANSFERIDO PARA 3943","Transferido para 3943"),boleto:getCol(c,"N\u00daMERO BOLETO","Numero Boleto","NUMERO BOLETO"),tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),cartao:getCol(c,"CART\u00c3O","CARTAO","Cartão"),canDate,canDl,canOk,bckDl,bckOk,isDup,issues,ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
   });
 }
 
@@ -139,12 +153,31 @@ const View5125=({results,onExport})=>{
                 <td style={{padding:"9px 12px"}}><Badge type={r.bckOk===true?"ONTIME":r.bckOk===false?"LATE":"PEND"}/></td>
                 <td style={{padding:"9px 12px"}}>{r.ok?<Badge type="OK"/>:r.issues.map(t=><Badge key={t} type={t}/>)}</td>
               </tr>
-              {expanded===i&&(<tr key={`e${i}`} style={{background:"#1a1a2a"}}><td colSpan={14} style={{padding:"14px 18px"}}>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
-                  {[["Valor Cancelamento",fV(r.cval)],["Ajuste Efetuado",r.ajuste||"—"],["Transf. 3943",r.trans3943||"—"],["CAN no G.A",r._ga?"✅ Localizado":"❌ Não localizado"],["Dias abert.→CAN",r.canDate&&r.od?`${Math.round((new Date(r.canDate)-new Date(r.od))/86400000)} dias`:"—"],["Dias CAN→BCK",r.canDate&&r.bd?`${Math.round((new Date(r.bd)-new Date(r.canDate))/86400000)} dias`:"—"],["Prazo CAN",fD(r.canDl)],["Prazo BCK",fD(r.bckDl)]].map(([l,v])=>(
-                    <div key={l} style={{background:T.card,padding:"10px 12px",borderRadius:8,border:`1px solid ${T.border}`}}><div style={{fontSize:10,color:T.muted,marginBottom:3}}>{l}</div><div style={{fontWeight:700,color:T.white,fontSize:13}}>{v}</div></div>
+              {expanded===i&&(<tr key={`e${i}`} style={{background:"#0d0d1a"}}><td colSpan={14} style={{padding:"16px 20px"}}>
+                {/* Summary row */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
+                  {[["Valor Cancelamento",fV(r.cval)],["Tipo Pagamento",r.tipoPag||"—"],["Número Boleto",r.boleto||"—"],["Cartão (4 dígitos)",r.cartao||"—"],["Ajuste Efetuado",r.ajuste||"—"],["Transf. 3943",r.trans3943||"—"],["Dias abert.→CAN",r.canDate&&r.od?`${Math.round((new Date(r.canDate)-new Date(r.od))/86400000)} dias`:"—"],["Dias CAN→BCK",r.canDate&&r.bd?`${Math.round((new Date(r.bd)-new Date(r.canDate))/86400000)} dias`:"—"]].map(([l,v])=>(
+                    <div key={l} style={{background:T.card,padding:"10px 12px",borderRadius:8,border:`1px solid ${T.border}`}}><div style={{fontSize:9,color:T.muted,marginBottom:3,letterSpacing:.5}}>{l.toUpperCase()}</div><div style={{fontWeight:700,color:T.white,fontSize:12}}>{v}</div></div>
                   ))}
                 </div>
+                {/* Observação do controle */}
+                {r.obs&&<div style={{background:T.card,padding:"10px 14px",borderRadius:8,border:`1px solid ${T.border}`,marginBottom:10}}><span style={{fontSize:10,color:T.muted,letterSpacing:.5}}>OBSERVAÇÃO (CONTROLE) </span><span style={{color:"#facc15",fontWeight:600,fontSize:12}}>{r.obs}</span></div>}
+                {/* CAN details from GA */}
+                {r._ga&&<div style={{marginBottom:10}}><div style={{fontSize:10,fontWeight:700,color:T.accent,letterSpacing:.8,marginBottom:6}}>◈ DETALHES CAN — G.A</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
+                    {[["Departamento",getCol(r._ga,"Departamento")],["Solicitante",getCol(r._ga,"Solicitante")],["Status Solicitação",getCol(r._ga,"Status da solicitacao","Status da solicita\u00e7\u00e3o")],["Tipo Exceção",getCol(r._ga,"Tipo de excecao","Tipo de exce\u00e7\u00e3o")||getIdx(r._ga,25)],["Motivo Cancelamento",getCol(r._ga,"Motivo do cancelamento")||getIdx(r._ga,26)],["Bandeira",getCol(r._ga,"Bandeira")],["Produto",getCol(r._ga,"Produto")],["Valor da Venda",fV(pV(getCol(r._ga,"Valor da venda")||getIdx(r._ga,29)))],["Data Prev. Liq.",getCol(r._ga,"Data prevista de liquidacao","Data prevista de liquida\u00e7\u00e3o")||getIdx(r._ga,20)],["N° Lógico",getCol(r._ga,"Numero logico","N\u00famero l\u00f3gico")||getIdx(r._ga,13)]].map(([l,v])=>(
+                      <div key={l} style={{background:"#1a1a2a",padding:"8px 10px",borderRadius:6,border:`1px solid #2a2a3a`}}><div style={{fontSize:9,color:T.muted,marginBottom:2,letterSpacing:.4}}>{l.toUpperCase()}</div><div style={{fontWeight:600,color:T.white,fontSize:11,wordBreak:"break-word"}}>{v||"—"}</div></div>
+                    ))}
+                  </div>
+                </div>}
+                {/* BCK details */}
+                {r._bck&&<div><div style={{fontSize:10,fontWeight:700,color:"#60a5fa",letterSpacing:.8,marginBottom:6}}>◈ DETALHES CRÉDITO ({r._bck.dept||"BCK"}) — G.A</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
+                    {[["Data BCK",fD(r._bck.date)],["Observações GA",r._bck.obs||"—"],["Departamento",getCol(r._bck.row,"Departamento")],["Solicitante",getCol(r._bck.row,"Solicitante")],["Valor Ajuste",fV(pV(getCol(r._bck.row,"Valor total do ajuste")||getIdx(r._bck.row,16)))],["Status",getCol(r._bck.row,"Status do ajuste","Status da solicita\u00e7\u00e3o")],["Bandeira",getCol(r._bck.row,"Bandeira")],["Data Prev. Liq.",getCol(r._bck.row,"Data prevista de liquidacao")||getIdx(r._bck.row,20)],["N° RO",getCol(r._bck.row,"Numero RO","N\u00famero RO")||getIdx(r._bck.row,23)],["Produto",getCol(r._bck.row,"Produto")]].map(([l,v])=>(
+                      <div key={l} style={{background:"#0d1a2a",padding:"8px 10px",borderRadius:6,border:`1px solid #1a2a3a`}}><div style={{fontSize:9,color:T.muted,marginBottom:2,letterSpacing:.4}}>{l.toUpperCase()}</div><div style={{fontWeight:600,color:T.white,fontSize:11,wordBreak:"break-word"}}>{v||"—"}</div></div>
+                    ))}
+                  </div>
+                </div>}
               </td></tr>)}
             </>))}
           </tbody>
