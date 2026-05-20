@@ -100,7 +100,7 @@ function analyze5125(gaRows,ctrlRows){
     const issues=[];
     if(isDup)issues.push("DUP");
     if(!gaRec)issues.push("SEM_CAN");
-    else if(canOk===false)issues.push("SLA_CAN");
+    // SLA_CAN removed: clock starts when boleto is paid (= CAN date), not opening date
     if(bckOk===false)issues.push("SLA_BCK");
     return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,
       analista:getCol(c,"ANALISTA","Analista"),
@@ -130,7 +130,7 @@ const MODULES=[
 const MODULE_BY_ID=Object.fromEntries(MODULES.map(m=>[m.id,m]));
 const GROUPS=[...new Set(MODULES.map(m=>m.group))];
 
-const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
+const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"ℹ️ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
 const Badge=({type})=>{const s=BADGES[type]||BADGES.PEND;return<span style={{display:"inline-block",padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:700,letterSpacing:.5,background:s.bg,color:s.fg,marginRight:3,whiteSpace:"nowrap"}}>{s.txt}</span>;};
 
 const Login=()=>{
@@ -174,7 +174,7 @@ const View5125=({results,onExport})=>{
   const TH=({c})=><th style={{padding:"11px 12px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
   return(<div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:12,marginBottom:24}}>
-      {[[stats.total,"Total",T.accent,"📊"],[stats.ok,"OK",T.success,"✅"],[stats.issues,"Pendência",T.danger,"⚠️"],[stats.dup,"Duplicata",T.warning,"🔁"],[stats.slaCan,"SLA CAN",T.danger,"⏰"],[stats.slaBck,"SLA BCK",T.danger,"⏰"],[stats.semCan,"Sem CAN",T.purple,"❌"]].map(([v,l,c,ic])=><Stat key={l} label={l} value={v} color={c} icon={ic}/>)}
+      {[[stats.total,"Total",T.accent,"📊"],[stats.ok,"OK",T.success,"✅"],[stats.issues,"Pendência",T.danger,"⚠️"],[stats.dup,"Duplicata",T.warning,"🔁"],[stats.slaCan,"CAN Tardio",T.muted,"ℹ️"],[stats.slaBck,"SLA BCK",T.danger,"⏰"],[stats.semCan,"Sem CAN",T.purple,"❌"]].map(([v,l,c,ic])=><Stat key={l} label={l} value={v} color={c} icon={ic}/>)}
     </div>
     <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,flexWrap:"wrap"}}>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por referência, EC, autorização, analista…" style={{flex:1,minWidth:200,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
@@ -185,7 +185,7 @@ const View5125=({results,onExport})=>{
     <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
       <div style={{overflowX:"auto",maxHeight:"50vh",overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-          <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>{["Referência","EC","Autorização","Data Venda","Valor","Data Abertura","Analista","Data CAN","Prazo CAN","SLA CAN","Data BCK","Prazo BCK","SLA BCK","Situação"].map(c=><TH key={c} c={c}/>)}</tr></thead>
+          <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>{["Referência","EC","Autorização","Data Venda","Valor","Data Abertura","Analista","Data CAN","Prazo CAN","CAN Info","Data BCK","Prazo BCK","SLA BCK","Situação"].map(c=><TH key={c} c={c}/>)}</tr></thead>
           <tbody>
             {shown.map((r,i)=>(<>
               <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:r.isDup?"hsl(38,92%,8%)":!r.ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
@@ -196,9 +196,9 @@ const View5125=({results,onExport})=>{
                 <td style={{padding:"9px 12px",fontWeight:700,color:T.white}}>{fV(r.valor)}</td>
                 <td style={{padding:"9px 12px",color:T.white}}>{fD(r.od)}</td>
                 <td style={{padding:"9px 12px",color:T.gray}}>{r.analista||"—"}</td>
-                <td style={{padding:"9px 12px",color:r.canOk===false?T.danger:r.canOk?T.success:T.muted}}>{fD(r.canDate)}</td>
+                <td style={{padding:"9px 12px",color:r.canOk===false?T.warning:r.canOk?T.success:T.muted}}>{fD(r.canDate)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.canDl)}</td>
-                <td style={{padding:"9px 12px"}}><Badge type={r.canOk===true?"ONTIME":r.canOk===false?"LATE":"PEND"}/></td>
+                <td style={{padding:"9px 12px"}}><Badge type={r.canOk===true?"ONTIME":r.canOk===false?"SLA_CAN":"PEND"}/></td>
                 <td style={{padding:"9px 12px",color:r.bckOk===false?T.danger:r.bckOk?T.success:T.muted}}>{fD(r.bd)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.bckDl)}</td>
                 <td style={{padding:"9px 12px"}}><Badge type={r.bckOk===true?"ONTIME":r.bckOk===false?"LATE":"PEND"}/></td>
@@ -238,7 +238,7 @@ const View5125=({results,onExport})=>{
     </div>
     <div style={{marginTop:12,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
       <span style={{fontSize:11,color:T.gray,fontWeight:700}}>Legenda:</span>
-      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["SLA CAN","SLA_CAN"],["SLA BCK","SLA_BCK"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
+      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["CAN tardio (info)","SLA_CAN"],["SLA BCK","SLA_BCK"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
       <span style={{fontSize:10,color:T.muted,marginLeft:"auto"}}>Clique na linha para detalhar · D+2 considera feriados nacionais</span>
     </div>
   </div>);
@@ -261,7 +261,7 @@ const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
     </div>
     {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/>}
     {moduleResults&&!mod.is5125&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
-    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA CAN D+2 · ✔ SLA BCK D+2 · ✔ Feriados 2025–2027</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
+    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
   </div>);
 };
 
