@@ -35,7 +35,7 @@ const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();if(!s)retur
 const normRef=s=>{if(!s&&s!==0)return"";const n=parseFloat(String(s));if(!isNaN(n)&&n>0)return String(Math.round(n));return String(s).trim();};
 const addBiz=(ds,n)=>{if(!ds)return null;try{const dt=new Date(ds+"T12:00:00Z");if(isNaN(dt.getTime()))return null;let c=0;while(c<n){dt.setUTCDate(dt.getUTCDate()+1);const k=dt.toISOString().slice(0,10),w=dt.getUTCDay();if(w!==0&&w!==6&&!BR_HOL.has(k))c++;}return dt.toISOString().slice(0,10);}catch(e){return null;}};
 const fD=s=>{if(!s)return"—";const[y,m,d]=s.split("-");return`${d}/${m}/${y}`;};
-const pV=s=>{if(!s)return 0;return parseFloat(String(s).replace(/\./g,"").replace(",","."))||0;};
+const pV=s=>{if(!s)return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",","."))||0;};
 const fV=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 
 const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];cb(XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}));};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
@@ -43,50 +43,54 @@ const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase(
 function analyze5125(gaRows,ctrlRows){
   const canByProt={},bckByRef={},dupTrack={};
   gaRows.forEach(r=>{
-    const dep=getCol(r,"Departamento","DEPARTAMENTO").toUpperCase();
     const ec=getCol(r,"EC","ec");
-    if(dep==="CAN"){
+    // Use column INDEX 8 for Código+Motivo (garbled header), index 11 for date, 12 for obs
+    const cod=getIdx(r,8);
+    const cd=parseAny(getIdx(r,11));
+    const obs=getIdx(r,12);
+    // Code 97 = Cancelamento de Venda (CAN)
+    const is97=/^\s*97[\s\-]/i.test(cod)||cod.toUpperCase().includes("CANCELAMENTO DE VENDA");
+    // Code 962 = Acerto/Crédito (BCK, now also done in CAN dept)
+    const is962=/^\s*(C?\s*962|962)[\s\-]/i.test(cod)||cod.toUpperCase().includes("ACERTO")||cod.toUpperCase().includes("C962");
+    if(is97){
       const prot=normRef(getCol(r,"Protocolo Cancelamento","PROTOCOLO CANCELAMENTO")||getIdx(r,24));
-      const auth=(getCol(r,"Autorizacao","Autorizacao","Autoriza\u00e7\u00e3o","Autorizacao")||getIdx(r,28)).toUpperCase();
-      const sd=parseAny(getCol(r,"Data da venda","DATA DA VENDA","Data da Venda")||getIdx(r,27));
-      const cd=parseAny(getCol(r,"Data de criacao","Data de Cria\u00e7\u00e3o","Data de criacao")||getIdx(r,11));
-      if(prot){
-        // Cancelamento CAN normal
-        canByProt[prot]={...r,_canDate:cd};
-        if(auth&&sd){const k=`${ec}|${auth}|${sd}`;if(!dupTrack[k])dupTrack[k]=[];dupTrack[k].push(prot||"?");}
-      } else {
-        // Ajuste crédito C962 feito no CAN (novo fluxo GA)
-        const obs=getCol(r,"Observacoes","Observa\u00e7\u00f5es","Observações")||getIdx(r,12);
-        const codAjuste=getIdx(r,8);
-        const m=obs.match(/REF\.\s*(\d+)/i);
-        if(m&&cd&&(codAjuste.includes("962")||m)&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
-          bckByRef[m[1]]={date:cd,row:r,obs,dept:"CAN"};
-      }
+      const auth=(getCol(r,"Autorizacao","Autoriza\u00e7\u00e3o")||getIdx(r,28)).toUpperCase();
+      const sd=parseAny(getIdx(r,27));
+      if(prot) canByProt[prot]={...r,_canDate:cd};
+      if(auth&&sd){const k=`${ec}|${auth}|${sd}`;if(!dupTrack[k])dupTrack[k]=[];dupTrack[k].push(prot||"?");}
     }
-    if(dep==="BCK"){
-      // Ajuste crédito C962 feito no SEC (fluxo antigo)
-      const obs=getCol(r,"Observacoes","Observa\u00e7\u00f5es","Observações")||getIdx(r,12);
-      const cd=parseAny(getCol(r,"Data de criacao","Data de Cria\u00e7\u00e3o","Data de criacao")||getIdx(r,11));
+    if(is962){
+      const dep=getCol(r,"Departamento","DEPARTAMENTO").toUpperCase()||"CAN";
       const m=obs.match(/REF\.\s*(\d+)/i);
-      if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))bckByRef[m[1]]={date:cd,row:r,obs,dept:"BCK"};
+      if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
+        bckByRef[m[1]]={date:cd,row:r,obs,dept:dep,cod};
+    }
+    // Fallback: BCK dept with REF (old SEC flow without code 962)
+    if(!is97&&!is962&&getCol(r,"Departamento").toUpperCase()==="BCK"){
+      const m=obs.match(/REF\.\s*(\d+)/i);
+      if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
+        bckByRef[m[1]]={date:cd,row:r,obs,dept:"BCK",cod};
     }
   });
   const dupProts=new Set();
   Object.values(dupTrack).forEach(ps=>{if(ps.length>1)ps.forEach(p=>p&&dupProts.add(p));});
   return ctrlRows.map(c=>{
-    const ref=normRef(getCol(c,"REFERENCIA","Referencia","REFER\u00caNCIA","Refer\u00eancia"));
+    const ref=normRef(getCol(c,"REFERÊNCIA","REFERENCIA","Referencia","Refer\u00eancia"));
     const ec=getCol(c,"ESTABELECIMENTO","Estabelecimento");
-    const auth=getCol(c,"AUTORIZACAO","Autoriza\u00e7\u00e3o","Autorizacao","AUTORIZACAO","AUTORIZA\u00c7\u00c3O");
-    const od=parseAny(getCol(c,"DATA","DATA ABERTURA","Data Abertura","Data de Abertura"));
-    const bdCtrl=parseAny(getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito","DATA DO AJUSTE A CR\u00c9DITO"));
+    const auth=getCol(c,"AUTORIZAÇÃO","AUTORIZACAO","Autoriza\u00e7\u00e3o","Autorizacao");
+    // Control file now has DATA ABERTURA (one column) and DATA DA VENDA
+    const od=parseAny(getCol(c,"DATA ABERTURA","DATA","Data Abertura","Data de Abertura"));
+    const sd=parseAny(getCol(c,"DATA DA VENDA","Data da Venda","DATA DA VENDA"));
+    const bdCtrl=parseAny(getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito"));
     const bckRec=bckByRef[ref]||null;
     const bd=bdCtrl||bckRec?.date||null;
-    const valor=pV(getCol(c,"VALOR DA TRANSA\u00c7\u00c3O","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
+    const valor=pV(getCol(c,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
     const cval=pV(getCol(c,"VALOR DO CANCELAMENTO","Valor do Cancelamento"));
-    const obs=getCol(c,"OBSERVA\u00c7\u00c3O","OBSERVACAO","Observação","Observacao");
+    const vBoleto=pV(getCol(c,"VALOR DO BOLETO","Valor do Boleto"));
+    const obs=getCol(c,"OBSERVAÇÃO","OBSERVACAO","Observa\u00e7\u00e3o","Observacao");
     const gaRec=canByProt[ref]||null;
-    // Sale date from GA CAN record (not in control file)
-    const sd=gaRec?parseAny(getCol(gaRec,"Data da venda","DATA DA VENDA")||getIdx(gaRec,27)):null;
+    // Sale date: prefer control file, fallback to GA record
+    const sdFinal=sd||( gaRec?parseAny(getIdx(gaRec,27)):null );
     const canDate=gaRec?._canDate||null;
     const canDl=addBiz(od,2);
     const bckDl=canDate?addBiz(canDate,2):null;
@@ -98,7 +102,15 @@ function analyze5125(gaRows,ctrlRows){
     if(!gaRec)issues.push("SEM_CAN");
     else if(canOk===false)issues.push("SLA_CAN");
     if(bckOk===false)issues.push("SLA_BCK");
-    return{ref,ec,auth,sd,od,bd,valor,cval,obs,analista:getCol(c,"ANALISTA","Analista"),ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),trans3943:getCol(c,"TRANSFERIDO PARA 3943","Transferido para 3943"),boleto:getCol(c,"N\u00daMERO BOLETO","Numero Boleto","NUMERO BOLETO"),tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),cartao:getCol(c,"CART\u00c3O","CARTAO","Cartão"),canDate,canDl,canOk,bckDl,bckOk,isDup,issues,ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
+    return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,
+      analista:getCol(c,"ANALISTA","Analista"),
+      ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),
+      trans3943:getCol(c,"TRANSFERIDO PARA 3943","Transferido para 3943"),
+      boleto:getCol(c,"NÚMERO BOLETO","NUMERO BOLETO","Numero Boleto"),
+      tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),
+      cartao:getCol(c,"CARTÃO","CARTAO","Cart\u00e3o"),
+      canDate,canDl,canOk,bckDl,bckOk,isDup,issues,
+      ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
   });
 }
 
