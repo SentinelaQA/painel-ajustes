@@ -37,7 +37,13 @@ const isScheduled=v=>{if(!v)return false;const s=String(v).trim();return !parseD
 const normRef=s=>{if(!s&&s!==0)return"";const n=parseFloat(String(s));if(!isNaN(n)&&n>0)return String(Math.round(n));return String(s).trim();};
 const addBiz=(ds,n)=>{if(!ds)return null;try{const dt=new Date(ds+"T12:00:00Z");if(isNaN(dt.getTime()))return null;let c=0;while(c<n){dt.setUTCDate(dt.getUTCDate()+1);const k=dt.toISOString().slice(0,10),w=dt.getUTCDay();if(w!==0&&w!==6&&!BR_HOL.has(k))c++;}return dt.toISOString().slice(0,10);}catch(e){return null;}};
 const fD=s=>{if(!s)return"—";const[y,m,d]=s.split("-");return`${d}/${m}/${y}`;};
-const pV=s=>{if(!s)return 0;return parseFloat(String(s).replace(/R\$\s*/g,"").replace(/\./g,"").replace(",","."))||0;};
+const pV=s=>{
+  if(!s)return 0;
+  s=String(s).replace(/R\$\s*/g,"").trim();
+  if(!s)return 0;
+  if(s.includes(","))return parseFloat(s.replace(/\./g,"").replace(",","."))||0;
+  return parseFloat(s)||0;
+};
 const fV=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 
 const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];cb(XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}));};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
@@ -87,6 +93,7 @@ function analyze5125(gaRows,ctrlRows){
     const bdCtrl=parseAny(bdRaw);
     const bdScheduled=isScheduled(bdRaw);
     const bckRec=bckByRef[ref]||null;
+    const bckValor=bckRec?pV(getIdx(bckRec.row,16)):null;
     const bd=bdCtrl||bckRec?.date||null;
     const valor=pV(getCol(c,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
     const cval=pV(getCol(c,"VALOR DO CANCELAMENTO","Valor do Cancelamento"));
@@ -107,6 +114,7 @@ function analyze5125(gaRows,ctrlRows){
     if(!gaRec)issues.push("SEM_CAN");
     // SLA_CAN removed: clock starts when boleto is paid (= CAN date), not opening date
     if(bckOk===false&&!bdScheduled)issues.push("SLA_BCK");
+    if(bckRec&&bckValor!==null&&cval>0&&Math.abs(bckValor-cval)>0.05)issues.push("VALOR_DIFF");
     return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,
       analista:getCol(c,"ANALISTA","Analista"),
       ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),
@@ -114,7 +122,7 @@ function analyze5125(gaRows,ctrlRows){
       boleto:getCol(c,"NÚMERO BOLETO","NUMERO BOLETO","Numero Boleto"),
       tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),
       cartao:getCol(c,"CARTÃO","CARTAO","Cart\u00e3o"),
-      canDate,canDl,canOk,bckDl,bckOk,bdScheduled,bckStatus,isDup,issues,
+      canDate,canDl,canOk,bckDl,bckOk,bdScheduled,bckStatus,isDup,issues,bckValor,
       ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
   });
 }
@@ -135,7 +143,7 @@ const MODULES=[
 const MODULE_BY_ID=Object.fromEntries(MODULES.map(m=>[m.id,m]));
 const GROUPS=[...new Set(MODULES.map(m=>m.group))];
 
-const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"ℹ️ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},SCHED:{bg:"rgba(0,180,216,.15)",fg:"#00b4d8",txt:"AGENDADO"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
+const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"ℹ️ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},SCHED:{bg:"rgba(0,180,216,.15)",fg:"#00b4d8",txt:"AGENDADO"},VALOR_DIFF:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"⚠️ VALOR"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
 const Badge=({type})=>{const s=BADGES[type]||BADGES.PEND;return<span style={{display:"inline-block",padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:700,letterSpacing:.5,background:s.bg,color:s.fg,marginRight:3,whiteSpace:"nowrap"}}>{s.txt}</span>;};
 
 const Login=()=>{
@@ -221,7 +229,7 @@ const View5125=({results,onExport})=>{
                 {/* CAN details from GA */}
                 {r._ga&&<div style={{marginBottom:10}}><div style={{fontSize:10,fontWeight:700,color:T.accent,letterSpacing:.8,marginBottom:6}}>◈ DETALHES CAN — G.A</div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
-                    {[["Departamento",getCol(r._ga,"Departamento")],["Solicitante",getCol(r._ga,"Solicitante")],["Status Solicitação",getCol(r._ga,"Status da solicitacao","Status da solicita\u00e7\u00e3o")],["Tipo Exceção",getCol(r._ga,"Tipo de excecao","Tipo de exce\u00e7\u00e3o")||getIdx(r._ga,25)],["Motivo Cancelamento",getCol(r._ga,"Motivo do cancelamento")||getIdx(r._ga,26)],["Bandeira",getCol(r._ga,"Bandeira")],["Produto",getCol(r._ga,"Produto")],["Valor da Venda",fV(pV(getCol(r._ga,"Valor da venda")||getIdx(r._ga,29)))],["Data Prev. Liq.",getCol(r._ga,"Data prevista de liquidacao","Data prevista de liquida\u00e7\u00e3o")||getIdx(r._ga,20)],["N° Lógico",getCol(r._ga,"Numero logico","N\u00famero l\u00f3gico")||getIdx(r._ga,13)]].map(([l,v])=>(
+                    {[["Departamento",getCol(r._ga,"Departamento")],["Solicitante",getCol(r._ga,"Solicitante")],["Status Solicitação",getCol(r._ga,"Status da solicitacao","Status da solicita\u00e7\u00e3o")],["Tipo Exceção",getCol(r._ga,"Tipo de excecao","Tipo de exce\u00e7\u00e3o")||getIdx(r._ga,25)],["Motivo Cancelamento",getCol(r._ga,"Motivo do cancelamento")||getIdx(r._ga,26)],["Bandeira",getCol(r._ga,"Bandeira")],["Produto",getCol(r._ga,"Produto")],["Valor da Venda",fV(pV(getCol(r._ga,"Valor da venda")||getIdx(r._ga,29)))],["Data Prev. Liq.",fD(parseAny(getCol(r._ga,"Data prevista de liquidacao","Data prevista de liquida\u00e7\u00e3o")||getIdx(r._ga,20)))],["N° Lógico",getCol(r._ga,"Numero logico","N\u00famero l\u00f3gico")||getIdx(r._ga,13)]].map(([l,v])=>(
                       <div key={l} style={{background:T.bg,padding:"8px 10px",borderRadius:6,border:`1px solid #2a2a3a`}}><div style={{fontSize:9,color:T.muted,marginBottom:2,letterSpacing:.4}}>{l.toUpperCase()}</div><div style={{fontWeight:600,color:T.white,fontSize:11,wordBreak:"break-word"}}>{v||"—"}</div></div>
                     ))}
                   </div>
@@ -229,7 +237,7 @@ const View5125=({results,onExport})=>{
                 {/* BCK details */}
                 {r._bck&&<div><div style={{fontSize:10,fontWeight:700,color:T.accent,letterSpacing:.8,marginBottom:6}}>◈ DETALHES CRÉDITO ({r._bck.dept||"BCK"}) — G.A</div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
-                    {[["Data BCK",fD(r._bck.date)],["Observações GA",r._bck.obs||"—"],["Departamento",getCol(r._bck.row,"Departamento")],["Solicitante",getCol(r._bck.row,"Solicitante")],["Valor Ajuste",fV(pV(getCol(r._bck.row,"Valor total do ajuste")||getIdx(r._bck.row,16)))],["Status",getCol(r._bck.row,"Status do ajuste","Status da solicita\u00e7\u00e3o")],["Bandeira",getCol(r._bck.row,"Bandeira")],["Data Prev. Liq.",getCol(r._bck.row,"Data prevista de liquidacao")||getIdx(r._bck.row,20)],["N° RO",getCol(r._bck.row,"Numero RO","N\u00famero RO")||getIdx(r._bck.row,23)],["Produto",getCol(r._bck.row,"Produto")]].map(([l,v])=>(
+                    {[["Data BCK",fD(r._bck.date)],["Observações GA",r._bck.obs||"—"],["Departamento",getCol(r._bck.row,"Departamento")],["Solicitante",getCol(r._bck.row,"Solicitante")],["Valor Ajuste GA",`${fV(r.bckValor||0)} ${r.bckValor!==null&&r.cval>0?(Math.abs(r.bckValor-r.cval)<0.05?"✅ OK":"⚠️ ≠ "+fV(r.cval)):""}`.trim()],["Status",getCol(r._bck.row,"Status do ajuste","Status da solicita\u00e7\u00e3o")],["Bandeira",getCol(r._bck.row,"Bandeira")],["Data Prev. Liq.",fD(parseAny(getCol(r._bck.row,"Data prevista de liquidacao")||getIdx(r._bck.row,20)))],["N° RO",getCol(r._bck.row,"Numero RO","N\u00famero RO")||getIdx(r._bck.row,23)],["Produto",getCol(r._bck.row,"Produto")]].map(([l,v])=>(
                       <div key={l} style={{background:T.surface,padding:"8px 10px",borderRadius:6,border:`1px solid #1a2a3a`}}><div style={{fontSize:9,color:T.muted,marginBottom:2,letterSpacing:.4}}>{l.toUpperCase()}</div><div style={{fontWeight:600,color:T.white,fontSize:11,wordBreak:"break-word"}}>{v||"—"}</div></div>
                     ))}
                   </div>
@@ -243,7 +251,7 @@ const View5125=({results,onExport})=>{
     </div>
     <div style={{marginTop:12,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
       <span style={{fontSize:11,color:T.gray,fontWeight:700}}>Legenda:</span>
-      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["CAN tardio (info)","SLA_CAN"],["SLA BCK","SLA_BCK"],["Agendado","SCHED"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
+      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["CAN tardio (info)","SLA_CAN"],["SLA BCK","SLA_BCK"],["Agendado","SCHED"],["Valor divergente","VALOR_DIFF"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
       <span style={{fontSize:10,color:T.muted,marginLeft:"auto"}}>Clique na linha para detalhar · D+2 considera feriados nacionais</span>
     </div>
   </div>);
