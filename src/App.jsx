@@ -31,7 +31,9 @@ const normStr=s=>(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLower
 const getCol=(row,...keys)=>{const rk=Object.keys(row);for(const k of keys){if(row[k]!==undefined&&row[k]!==null&&String(row[k]).trim()!=="")return String(row[k]).trim();const f=rk.find(r=>normStr(r)===normStr(k));if(f&&row[f]!==undefined&&row[f]!==null&&String(row[f]).trim()!=="")return String(row[f]).trim();}return "";};
 const getIdx=(row,i)=>{const v=Object.values(row)[i];return v!==undefined&&v!==null?String(v).trim():"";};
 const parseD=s=>{if(!s)return null;s=String(s).trim();if(/^\d{2}\/\d{2}\/\d{4}/.test(s)){const[d,m,y]=s.split("/");return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);return null;};
-const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();if(!s)return null;const d=parseD(s);if(d)return d;const n=parseFloat(s);if(!isNaN(n)&&n>40000&&n<60000){try{const dt=new Date(Math.floor((n-25569)*86400*1000));if(!isNaN(dt.getTime()))return dt.toISOString().slice(0,10);}catch(e){}}try{const dt=new Date(s);if(!isNaN(dt.getTime())){const iso=dt.toISOString().slice(0,10);if(iso>="2000-01-01"&&iso<="2035-12-31")return iso;}}catch(e){}return null;};
+const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();if(!s)return null;const d=parseD(s);if(d)return d;const n=parseFloat(s);if(!isNaN(n)&&n>40000&&n<60000){try{const dt=new Date(Math.floor((n-25569)*86400*1000));if(!isNaN(dt.getTime()))return dt.toISOString().slice(0,10);}catch(e){}}const dm=s.match(/(\d{2}\/\d{2}\/\d{4})/);if(dm)return parseD(dm[1]);try{const dt=new Date(s);if(!isNaN(dt.getTime())){const iso=dt.toISOString().slice(0,10);if(iso>="2000-01-01"&&iso<="2035-12-31")return iso;}}catch(e){}return null;};
+const isScheduled=v=>{if(!v)return false;const s=String(v).trim();return !parseD(s)&&/(\d{2}\/\d{2}\/\d{4})/.test(s);};
+
 const normRef=s=>{if(!s&&s!==0)return"";const n=parseFloat(String(s));if(!isNaN(n)&&n>0)return String(Math.round(n));return String(s).trim();};
 const addBiz=(ds,n)=>{if(!ds)return null;try{const dt=new Date(ds+"T12:00:00Z");if(isNaN(dt.getTime()))return null;let c=0;while(c<n){dt.setUTCDate(dt.getUTCDate()+1);const k=dt.toISOString().slice(0,10),w=dt.getUTCDay();if(w!==0&&w!==6&&!BR_HOL.has(k))c++;}return dt.toISOString().slice(0,10);}catch(e){return null;}};
 const fD=s=>{if(!s)return"—";const[y,m,d]=s.split("-");return`${d}/${m}/${y}`;};
@@ -81,7 +83,9 @@ function analyze5125(gaRows,ctrlRows){
     // Control file now has DATA ABERTURA (one column) and DATA DA VENDA
     const od=parseAny(getCol(c,"DATA ABERTURA","DATA","Data Abertura","Data de Abertura"));
     const sd=parseAny(getCol(c,"DATA DA VENDA","Data da Venda","DATA DA VENDA"));
-    const bdCtrl=parseAny(getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito"));
+    const bdRaw=getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito");
+    const bdCtrl=parseAny(bdRaw);
+    const bdScheduled=isScheduled(bdRaw);
     const bckRec=bckByRef[ref]||null;
     const bd=bdCtrl||bckRec?.date||null;
     const valor=pV(getCol(c,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
@@ -96,12 +100,13 @@ function analyze5125(gaRows,ctrlRows){
     const bckDl=canDate?addBiz(canDate,2):null;
     const canOk=canDate&&canDl?canDate<=canDl:null;
     const bckOk=bd&&bckDl?bd<=bckDl:(!bd&&bckDl&&TODAY>bckDl?false:null);
+    const bckStatus=bdScheduled?"SCHED":bckOk===true?"OK":bckOk===false?"LATE":"PEND";
     const isDup=dupProts.has(ref);
     const issues=[];
     if(isDup)issues.push("DUP");
     if(!gaRec)issues.push("SEM_CAN");
     // SLA_CAN removed: clock starts when boleto is paid (= CAN date), not opening date
-    if(bckOk===false)issues.push("SLA_BCK");
+    if(bckOk===false&&!bdScheduled)issues.push("SLA_BCK");
     return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,
       analista:getCol(c,"ANALISTA","Analista"),
       ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),
@@ -109,7 +114,7 @@ function analyze5125(gaRows,ctrlRows){
       boleto:getCol(c,"NÚMERO BOLETO","NUMERO BOLETO","Numero Boleto"),
       tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),
       cartao:getCol(c,"CARTÃO","CARTAO","Cart\u00e3o"),
-      canDate,canDl,canOk,bckDl,bckOk,isDup,issues,
+      canDate,canDl,canOk,bckDl,bckOk,bdScheduled,bckStatus,isDup,issues,
       ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
   });
 }
@@ -130,7 +135,7 @@ const MODULES=[
 const MODULE_BY_ID=Object.fromEntries(MODULES.map(m=>[m.id,m]));
 const GROUPS=[...new Set(MODULES.map(m=>m.group))];
 
-const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"ℹ️ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
+const BADGES={OK:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},ONTIME:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},LATE:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},DUP:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"DUPLICATA"},SEM_CAN:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM CAN"},SLA_CAN:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"ℹ️ CAN"},SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ BCK"},SCHED:{bg:"rgba(0,180,216,.15)",fg:"#00b4d8",txt:"AGENDADO"},PEND:{bg:T.hover,fg:T.gray,txt:"—"}};
 const Badge=({type})=>{const s=BADGES[type]||BADGES.PEND;return<span style={{display:"inline-block",padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:700,letterSpacing:.5,background:s.bg,color:s.fg,marginRight:3,whiteSpace:"nowrap"}}>{s.txt}</span>;};
 
 const Login=()=>{
@@ -199,9 +204,9 @@ const View5125=({results,onExport})=>{
                 <td style={{padding:"9px 12px",color:r.canOk===false?T.warning:r.canOk?T.success:T.muted}}>{fD(r.canDate)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.canDl)}</td>
                 <td style={{padding:"9px 12px"}}><Badge type={r.canOk===true?"ONTIME":r.canOk===false?"SLA_CAN":"PEND"}/></td>
-                <td style={{padding:"9px 12px",color:r.bckOk===false?T.danger:r.bckOk?T.success:T.muted}}>{fD(r.bd)}</td>
+                <td style={{padding:"9px 12px",color:r.bckStatus==="SCHED"?T.accent:r.bckOk===false?T.danger:r.bckOk?T.success:T.muted}}>{fD(r.bd)}</td>
                 <td style={{padding:"9px 12px",color:T.muted}}>{fD(r.bckDl)}</td>
-                <td style={{padding:"9px 12px"}}><Badge type={r.bckOk===true?"ONTIME":r.bckOk===false?"LATE":"PEND"}/></td>
+                <td style={{padding:"9px 12px"}}><Badge type={r.bckStatus==="SCHED"?"SCHED":r.bckOk===true?"ONTIME":r.bckOk===false?"LATE":"PEND"}/></td>
                 <td style={{padding:"9px 12px"}}>{r.ok?<Badge type="OK"/>:r.issues.map(t=><Badge key={t} type={t}/>)}</td>
               </tr>
               {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={14} style={{padding:"16px 20px"}}>
@@ -238,7 +243,7 @@ const View5125=({results,onExport})=>{
     </div>
     <div style={{marginTop:12,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
       <span style={{fontSize:11,color:T.gray,fontWeight:700}}>Legenda:</span>
-      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["CAN tardio (info)","SLA_CAN"],["SLA BCK","SLA_BCK"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
+      {[["Duplicata","DUP"],["Sem CAN","SEM_CAN"],["CAN tardio (info)","SLA_CAN"],["SLA BCK","SLA_BCK"],["Agendado","SCHED"],["No prazo","ONTIME"],["OK","OK"]].map(([l,t])=>(<span key={t} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.gray}}><Badge type={t}/>{l}</span>))}
       <span style={{fontSize:10,color:T.muted,marginLeft:"auto"}}>Clique na linha para detalhar · D+2 considera feriados nacionais</span>
     </div>
   </div>);
