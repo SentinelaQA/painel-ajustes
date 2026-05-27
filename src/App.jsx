@@ -52,17 +52,14 @@ function analyze5125(gaRows,ctrlRows){
   const canByProt={},bckByRef={},dupTrack={};
   gaRows.forEach(r=>{
     const ec=getCol(r,"EC","ec");
-    // Use column INDEX 8 for Código+Motivo (garbled header), index 11 for date, 12 for obs
     const cod=getIdx(r,8);
     const cd=parseAny(getIdx(r,11));
     const obs=getIdx(r,12);
-    // Code 97 = Cancelamento de Venda (CAN)
     const is97=/^\s*97[\s\-]/i.test(cod)||cod.toUpperCase().includes("CANCELAMENTO DE VENDA");
-    // Code 962 = Acerto/Crédito (BCK, now also done in CAN dept)
     const is962=/^\s*(C?\s*962|962)[\s\-]/i.test(cod)||cod.toUpperCase().includes("ACERTO")||cod.toUpperCase().includes("C962");
     if(is97){
       const prot=normRef(getCol(r,"Protocolo Cancelamento","PROTOCOLO CANCELAMENTO")||getIdx(r,24));
-      const auth=(getCol(r,"Autorizacao","Autoriza\u00e7\u00e3o")||getIdx(r,28)).toUpperCase();
+      const auth=(getCol(r,"Autorizacao","Autorizacao","Autoriza\u00e7\u00e3o","Autorizacao")||getIdx(r,28)).toUpperCase();
       const sd=parseAny(getIdx(r,27));
       if(prot) canByProt[prot]={...r,_canDate:cd};
       if(auth&&sd){const k=`${ec}|${auth}|${sd}`;if(!dupTrack[k])dupTrack[k]=[];dupTrack[k].push(prot||"?");}
@@ -73,57 +70,94 @@ function analyze5125(gaRows,ctrlRows){
       if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
         bckByRef[m[1]]={date:cd,row:r,obs,dept:dep,cod};
     }
-    // Fallback: BCK dept with REF (old SEC flow without code 962)
     if(!is97&&!is962&&getCol(r,"Departamento").toUpperCase()==="BCK"){
       const m=obs.match(/REF\.\s*(\d+)/i);
       if(m&&cd&&(!bckByRef[m[1]]||bckByRef[m[1]].date>cd))
         bckByRef[m[1]]={date:cd,row:r,obs,dept:"BCK",cod};
     }
   });
-  const dupProts=new Set();
-  Object.values(dupTrack).forEach(ps=>{if(ps.length>1)ps.forEach(p=>p&&dupProts.add(p));});
-  return ctrlRows.map(c=>{
-    const ref=normRef(getCol(c,"REFERÊNCIA","REFERENCIA","Referencia","Refer\u00eancia"));
-    const ec=getCol(c,"ESTABELECIMENTO","Estabelecimento");
-    const auth=getCol(c,"AUTORIZAÇÃO","AUTORIZACAO","Autoriza\u00e7\u00e3o","Autorizacao");
-    // Control file now has DATA ABERTURA (one column) and DATA DA VENDA
-    const od=parseAny(getCol(c,"DATA ABERTURA","DATA","Data Abertura","Data de Abertura"));
-    const sd=parseAny(getCol(c,"DATA DA VENDA","Data da Venda","DATA DA VENDA"));
-    const bdRaw=getCol(c,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito");
+
+  // Duplicate detection: same EC+AUTH+DATA_VENDA+VALOR_TRANS+CARTAO in control
+  const ctrlKeyMap={};
+  ctrlRows.forEach(cr=>{
+    const ec=getCol(cr,"ESTABELECIMENTO","Estabelecimento");
+    const sd=parseAny(getCol(cr,"DATA DA VENDA","Data da Venda","DATA DA VENDA"));
+    const vt=String(Math.round(pV(getCol(cr,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transação"))*100));
+    const auth=getCol(cr,"AUTORIZAÇÃO","AUTORIZACAO","Autorização","Autorizacao").toUpperCase().trim();
+    const cartao=getCol(cr,"CARTÃO","CARTAO","Cartão").trim();
+    const ref=normRef(getCol(cr,"REFERÊNCIA","REFERENCIA","Referencia"));
+    if(ec&&auth&&sd){
+      const k=`${ec}|${auth}|${sd}|${vt}|${cartao}`;
+      if(!ctrlKeyMap[k])ctrlKeyMap[k]=[];
+      ctrlKeyMap[k].push(ref);
+    }
+  });
+  const ctrlDupRefs=new Set();
+  const ctrlDupGroups={};
+  Object.entries(ctrlKeyMap).forEach(([,refs])=>{
+    if(refs.length>1){
+      refs.forEach(ref=>{ctrlDupRefs.add(ref);ctrlDupGroups[ref]=refs;});
+    }
+  });
+
+  // Build a lookup of ALL control rows by ref for duplicate group display
+  const ctrlByRef={};
+  ctrlRows.forEach(cr=>{
+    const ref=normRef(getCol(cr,"REFERÊNCIA","REFERENCIA","Referencia"));
+    if(ref) ctrlByRef[ref]=cr;
+  });
+
+  return ctrlRows.map(cr=>{
+    const ref=normRef(getCol(cr,"REFERÊNCIA","REFERENCIA","Referencia","Referência"));
+    const ec=getCol(cr,"ESTABELECIMENTO","Estabelecimento");
+    const auth=getCol(cr,"AUTORIZAÇÃO","AUTORIZACAO","Autorização","Autorizacao");
+    const od=parseAny(getCol(cr,"DATA ABERTURA","DATA","Data Abertura","Data de Abertura"));
+    const sd=parseAny(getCol(cr,"DATA DA VENDA","Data da Venda","DATA DA VENDA"));
+    const bdRaw=getCol(cr,"DATA DO AJUSTE A CREDITO","Data do Ajuste a Credito");
     const bdCtrl=parseAny(bdRaw);
     const bdScheduled=isScheduled(bdRaw);
     const bckRec=bckByRef[ref]||null;
-    const bckValor=bckRec?pV(getIdx(bckRec.row,16)):null;
     const bd=bdCtrl||bckRec?.date||null;
-    const valor=pV(getCol(c,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transa\u00e7\u00e3o"));
-    const cval=pV(getCol(c,"VALOR DO CANCELAMENTO","Valor do Cancelamento"));
-    const vBoleto=pV(getCol(c,"VALOR DO BOLETO","Valor do Boleto"));
-    const obs=getCol(c,"OBSERVAÇÃO","OBSERVACAO","Observa\u00e7\u00e3o","Observacao");
+    const valor=pV(getCol(cr,"VALOR DA TRANSAÇÃO","VALOR DA TRANSACAO","Valor da Transação"));
+    const cval=pV(getCol(cr,"VALOR DO CANCELAMENTO","Valor do Cancelamento"));
+    const vBoleto=pV(getCol(cr,"VALOR DO BOLETO","Valor do Boleto"));
+    const obs=getCol(cr,"OBSERVAÇÃO","OBSERVACAO","Observação","Observacao");
+    const bckValor=bckRec?pV(getIdx(bckRec.row,16)):null;
     const gaRec=canByProt[ref]||null;
-    // Sale date: prefer control file, fallback to GA record
-    const sdFinal=sd||( gaRec?parseAny(getIdx(gaRec,27)):null );
+    const sdFinal=sd||(gaRec?parseAny(getIdx(gaRec,27)):null);
     const canDate=gaRec?._canDate||null;
     const canDl=addBiz(od,2);
     const bckDl=canDate?addBiz(canDate,2):null;
     const canOk=canDate&&canDl?canDate<=canDl:null;
     const bckOk=bd&&bckDl?bd<=bckDl:(!bd&&bckDl&&TODAY>bckDl?false:null);
     const bckStatus=bdScheduled?"SCHED":bckOk===true?"OK":bckOk===false?"LATE":"PEND";
-    const isDup=dupProts.has(ref);
+    const isDup=ctrlDupRefs.has(ref);
+    // Build duplicate group detail for display
+    const dupGroupRefs=ctrlDupGroups[ref]||[];
+    const dupGroupDetail=dupGroupRefs.map(r=>({
+      ref:r,
+      cval:pV(getCol(ctrlByRef[r]||{},"VALOR DO CANCELAMENTO","Valor do Cancelamento")),
+      hasCAN:!!canByProt[r],
+      canDate:canByProt[r]?._canDate||null,
+      hasBCK:!!bckByRef[r],
+      bckDate:bckByRef[r]?.date||null,
+      bckValor:bckByRef[r]?pV(getIdx(bckByRef[r].row,16)):null,
+    }));
     const issues=[];
     if(isDup)issues.push("DUP");
     if(!gaRec)issues.push("SEM_CAN");
-    // SLA_CAN removed: clock starts when boleto is paid (= CAN date), not opening date
     if(bckOk===false&&!bdScheduled)issues.push("SLA_BCK");
     if(bckRec&&bckValor!==null&&cval>0&&Math.abs(bckValor-cval)>0.05)issues.push("VALOR_DIFF");
-    return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,
-      analista:getCol(c,"ANALISTA","Analista"),
-      ajuste:getCol(c,"AJUSTE EFETUADO?","Ajuste Efetuado?"),
-      trans3943:getCol(c,"TRANSFERIDO PARA 3943","Transferido para 3943"),
-      boleto:getCol(c,"NÚMERO BOLETO","NUMERO BOLETO","Numero Boleto"),
-      tipoPag:getCol(c,"TIPO DE PAGAMENTO","Tipo de Pagamento"),
-      cartao:getCol(c,"CARTÃO","CARTAO","Cart\u00e3o"),
-      canDate,canDl,canOk,bckDl,bckOk,bdScheduled,bckStatus,isDup,issues,bckValor,
-      ok:issues.length===0,_ga:gaRec,_bck:bckRec,_c:c};
+    return{ref,ec,auth,sd:sdFinal,od,bd,valor,cval,vBoleto,obs,bckValor,
+      analista:getCol(cr,"ANALISTA","Analista"),
+      ajuste:getCol(cr,"AJUSTE EFETUADO?","Ajuste Efetuado?"),
+      trans3943:getCol(cr,"TRANSFERIDO PARA 3943","Transferido para 3943"),
+      boleto:getCol(cr,"NÚMERO BOLETO","NUMERO BOLETO","Numero Boleto"),
+      tipoPag:getCol(cr,"TIPO DE PAGAMENTO","Tipo de Pagamento"),
+      cartao:getCol(cr,"CARTÃO","CARTAO","Cartão"),
+      canDate,canDl,canOk,bckDl,bckOk,bdScheduled,bckStatus,
+      isDup,dupGroupRefs,dupGroupDetail,issues,ok:issues.length===0,
+      _ga:gaRec,_bck:bckRec,_c:cr};
   });
 }
 
@@ -218,6 +252,51 @@ const View5125=({results,onExport})=>{
                 <td style={{padding:"9px 12px"}}>{r.ok?<Badge type="OK"/>:r.issues.map(t=><Badge key={t} type={t}/>)}</td>
               </tr>
               {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={14} style={{padding:"16px 20px"}}>
+                {/* Duplicate group detail */}
+                {r.isDup&&r.dupGroupDetail?.length>0&&(
+                  <div style={{marginBottom:14,border:`1px solid ${T.warning}44`,borderRadius:10,overflow:"hidden"}}>
+                    <div style={{background:`${T.warning}22`,padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{color:T.warning,fontWeight:700,fontSize:12}}>⚠️ DUPLICATA DETECTADA</span>
+                      <span style={{color:T.gray,fontSize:11}}>Mesmos campos: {fD(r.sd)} · {fV(r.valor)} · {r.auth} · Cartão {r.cartao}</span>
+                    </div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                      <thead><tr style={{background:`${T.warning}11`}}>
+                        {["Referência","Val. Cancelamento","CAN (97)","Data CAN","BCK (962)","Data BCK","Val. Ajuste GA","✓ Match"].map(h=>(
+                          <th key={h} style={{padding:"7px 10px",textAlign:"left",color:T.gray,fontSize:10,letterSpacing:.5,fontWeight:700,borderBottom:`1px solid ${T.border}`}}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {r.dupGroupDetail.map((g,gi)=>{
+                          const match=g.bckValor!==null&&g.cval>0?Math.abs(g.bckValor-g.cval)<0.05:null;
+                          return(
+                            <tr key={gi} style={{background:gi%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`}}>
+                              <td style={{padding:"7px 10px",fontWeight:700,color:g.ref===r.ref?T.accent:T.white}}>{g.ref}{g.ref===r.ref?" ◀":""}</td>
+                              <td style={{padding:"7px 10px",color:T.white}}>{fV(g.cval)}</td>
+                              <td style={{padding:"7px 10px",color:g.hasCAN?T.success:T.danger}}>{g.hasCAN?"✅ Sim":"❌ Não"}</td>
+                              <td style={{padding:"7px 10px",color:T.gray}}>{fD(g.canDate)}</td>
+                              <td style={{padding:"7px 10px",color:g.hasBCK?T.success:T.danger}}>{g.hasBCK?"✅ Sim":"❌ Não"}</td>
+                              <td style={{padding:"7px 10px",color:T.gray}}>{fD(g.bckDate)}</td>
+                              <td style={{padding:"7px 10px",color:T.white}}>{g.bckValor!==null?fV(g.bckValor):"—"}</td>
+                              <td style={{padding:"7px 10px"}}>{match===true?<span style={{color:T.success}}>✅</span>:match===false?<span style={{color:T.danger}}>⚠️ {fV(g.cval)}</span>:<span style={{color:T.muted}}>—</span>}</td>
+                            </tr>
+                          );
+                        })}
+                        <tr style={{background:`${T.warning}11`,borderTop:`2px solid ${T.warning}44`}}>
+                          <td colSpan={2} style={{padding:"7px 10px",color:T.warning,fontWeight:700,fontSize:11}}>
+                            Total cancelamentos: {fV(r.dupGroupDetail.reduce((s,g)=>s+g.cval,0))}
+                            {r.dupGroupDetail.reduce((s,g)=>s+g.cval,0)>r.valor+0.05?
+                              <span style={{color:T.danger,marginLeft:8}}>⚠️ Excede valor original {fV(r.valor)}</span>:
+                              <span style={{color:T.success,marginLeft:8}}>✅ Dentro do valor original {fV(r.valor)}</span>
+                            }
+                          </td>
+                          <td colSpan={6} style={{padding:"7px 10px",color:T.muted,fontSize:11}}>
+                            Valor original da transação: <strong style={{color:T.white}}>{fV(r.valor)}</strong>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
                 {/* Summary row */}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
                   {[["Valor Cancelamento",fV(r.cval)],["Tipo Pagamento",r.tipoPag||"—"],["Número Boleto",r.boleto||"—"],["Cartão (4 dígitos)",r.cartao||"—"],["Ajuste Efetuado",r.ajuste||"—"],["Transf. 3943",r.trans3943||"—"],["Dias abert.→CAN",r.canDate&&r.od?`${Math.round((new Date(r.canDate)-new Date(r.od))/86400000)} dias`:"—"],["Dias CAN→BCK",r.canDate&&r.bd?`${Math.round((new Date(r.bd)-new Date(r.canDate))/86400000)} dias`:"—"]].map(([l,v])=>(
