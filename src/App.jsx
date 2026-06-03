@@ -210,18 +210,44 @@ const Sidebar=({activeId,onSelect})=>(<div style={{width:240,background:T.sideba
 
 const UploadZone=({label,count,onFile,enc})=>{const ref=useRef();return(<div onClick={()=>ref.current?.click()} style={{background:T.card,borderRadius:10,border:`1px dashed ${count?T.accent:T.muted}`,padding:"16px 20px",cursor:"pointer"}}><input ref={ref} type="file" accept=".csv,.xlsx,.xlsb,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&loadFile(e.target.files[0],enc,onFile)}/><div style={{fontSize:10,fontWeight:700,color:count?T.accent:T.gray,letterSpacing:.8,marginBottom:4}}>{label.toUpperCase()}</div><div style={{fontSize:12,color:count?T.accent:T.muted}}>{count?`✅ ${count} registros carregados`:"📎 CSV · XLSX · XLSB"}</div></div>);};
 
-const Stat=({label,value,color,icon})=>(<div style={{background:T.card,borderRadius:12,padding:"18px 16px",boxShadow:"0 4px 16px rgba(0,0,0,.4)",position:"relative",overflow:"hidden"}}><div style={{position:"absolute",top:-10,right:-10,fontSize:48,opacity:.06}}>{icon}</div><div style={{fontSize:30,fontWeight:900,color,lineHeight:1}}>{value}</div><div style={{fontSize:11,color:T.gray,marginTop:6}}>{label}</div></div>);
+const Stat=({label,value,color,icon,active,onClick})=>(<div onClick={onClick} style={{background:active?`${color}22`:T.card,borderRadius:12,padding:"18px 16px",boxShadow:active?`0 0 0 2px ${color},0 4px 16px rgba(0,0,0,.4)`:`0 4px 16px rgba(0,0,0,.4)`,position:"relative",overflow:"hidden",cursor:"pointer",transition:"all .2s"}}><div style={{position:"absolute",top:-10,right:-10,fontSize:48,opacity:.06}}>{icon}</div><div style={{fontSize:30,fontWeight:900,color,lineHeight:1}}>{value}</div><div style={{fontSize:11,color:T.gray,marginTop:6,letterSpacing:.2}}>{label}</div>{active&&<div style={{position:"absolute",bottom:0,left:0,right:0,height:3,background:color,borderRadius:"0 0 12px 12px"}}/>}</div>);
 
 const GenericTable=({data,moduleId})=>{const[search,setSearch]=useState("");const cols=data.length>0?Object.keys(data[0]).filter(k=>k!==""):[];const rows=useMemo(()=>{if(!search.trim())return data;const s=search.toLowerCase();return data.filter(r=>Object.values(r).some(v=>String(v).toLowerCase().includes(s)));},[data,search]);const doExport=()=>{const ws=XLSX.utils.json_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Dados");XLSX.writeFile(wb,`export_${moduleId}_${TODAY}.xlsx`);};return(<div><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,flexWrap:"wrap"}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar…" style={{flex:1,minWidth:200,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/><span style={{fontSize:12,color:T.gray}}>{rows.length}/{data.length}</span><button onClick={doExport} style={{padding:"10px 20px",background:T.accent,color:"#000",border:"none",borderRadius:50,fontSize:12,fontWeight:700,cursor:"pointer"}}>⬇ Exportar</button></div><div style={{background:T.card,borderRadius:12,overflow:"hidden"}}><div style={{overflowX:"auto",maxHeight:"55vh",overflowY:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>{cols.map(h=><th key={h} style={{padding:"11px 12px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{h}</th>)}</tr></thead><tbody>{rows.map((row,i)=>(<tr key={i} style={{background:i%2===0?T.card:T.card,borderBottom:`1px solid ${T.border}`}}>{cols.map(k=><td key={k} style={{padding:"9px 12px",color:T.white,whiteSpace:"nowrap",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{String(row[k]||"")}</td>)}</tr>))}</tbody></table>{rows.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>Nenhum registro encontrado.</div>}</div></div></div>);};
 
 const View5125=({results,onExport})=>{
   const[search,setSearch]=useState("");const[onlyIssues,setOnlyIssues]=useState(false);const[expanded,setExpanded]=useState(null);
-  const stats=useMemo(()=>({total:results.length,ok:results.filter(r=>r.ok).length,issues:results.filter(r=>!r.ok).length,dup:results.filter(r=>r.isDup).length,slaCan:results.filter(r=>r.canOk===false).length,slaBck:results.filter(r=>r.bckOk===false).length,semCan:results.filter(r=>r.issues.includes("SEM_CAN")).length}),[results]);
-  const shown=useMemo(()=>{let r=results;if(onlyIssues)r=r.filter(x=>!x.ok);if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.ref.includes(s)||x.ec.includes(s)||x.auth.toLowerCase().includes(s)||x.analista.toLowerCase().includes(s));}return r;},[results,search,onlyIssues]);
+  const stats=useMemo(()=>({total:results.length,ok:results.filter(r=>r.ok).length,issues:results.filter(r=>!r.ok).length,dup:results.filter(r=>r.isDup).length,slaCan:results.filter(r=>r.canOk===false).length,slaBck:results.filter(r=>r.bckOk===false&&!r.bdScheduled).length,semCan:results.filter(r=>r.issues.includes("SEM_CAN")).length,agendado:results.filter(r=>r.bdScheduled).length}),[results]);
+  const[activeFilter,setActiveFilter]=useState(null);
+  const toggleFilter=f=>setActiveFilter(af=>af===f?null:f);
+  const shown=useMemo(()=>{
+    let r=results;
+    if(activeFilter==="ok")r=r.filter(x=>x.ok);
+    else if(activeFilter==="issues")r=r.filter(x=>!x.ok);
+    else if(activeFilter==="dup")r=r.filter(x=>x.isDup);
+    else if(activeFilter==="canTardio")r=r.filter(x=>x.canOk===false);
+    else if(activeFilter==="slaBck")r=r.filter(x=>x.bckOk===false&&!x.bdScheduled);
+    else if(activeFilter==="semCan")r=r.filter(x=>x.issues.includes("SEM_CAN"));
+    else if(activeFilter==="agendado")r=r.filter(x=>x.bdScheduled);
+    if(onlyIssues)r=r.filter(x=>!x.ok);
+    if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.ref.includes(s)||x.ec.includes(s)||x.auth.toLowerCase().includes(s)||x.analista.toLowerCase().includes(s));}
+    return r;
+  },[results,search,onlyIssues,activeFilter]);
   const TH=({c})=><th style={{padding:"11px 12px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
   return(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:12,marginBottom:24}}>
-      {[[stats.total,"Total",T.accent,"📊"],[stats.ok,"OK",T.success,"✅"],[stats.issues,"Pendência",T.danger,"⚠️"],[stats.dup,"Duplicata",T.warning,"🔁"],[stats.slaCan,"CAN Tardio",T.muted,"ℹ️"],[stats.slaBck,"SLA BCK",T.danger,"⏰"],[stats.semCan,"Sem CAN",T.purple,"❌"]].map(([v,l,c,ic])=><Stat key={l} label={l} value={v} color={c} icon={ic}/>)}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:10,marginBottom:24}}>
+      {[
+          [stats.total,"Total",T.accent,"📊",null],
+          [stats.ok,"OK",T.success,"✅","ok"],
+          [stats.issues,"Pendência",T.danger,"⚠️","issues"],
+          [stats.dup,"Duplicata",T.warning,"🔁","dup"],
+          [stats.slaCan,"CAN Tardio",T.muted,"ℹ️","canTardio"],
+          [stats.slaBck,"SLA BCK",T.danger,"⏰","slaBck"],
+          [stats.semCan,"Sem CAN",T.purple,"❌","semCan"],
+          [stats.agendado,"Agendado",T.accent,"📅","agendado"],
+        ].map(([v,l,clr,ic,fk])=><Stat key={l} label={l} value={v} color={clr} icon={ic}
+          active={activeFilter===fk}
+          onClick={()=>fk?toggleFilter(fk):setActiveFilter(null)}
+        />)}
     </div>
     <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,flexWrap:"wrap"}}>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por referência, EC, autorização, analista…" style={{flex:1,minWidth:200,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
