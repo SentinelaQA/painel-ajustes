@@ -161,10 +161,67 @@ function analyze5125(gaRows,ctrlRows){
   });
 }
 
+function analyze9066(gaRows,ctrlRows){
+  const gaByEcLogico={},gaByEc={};
+  gaRows.forEach(r=>{
+    const ec=String(r['EC']||'').trim();
+    const vals=Object.values(r);
+    const logico=normRef(String(vals[13]||''));
+    const cod=String(vals[8]||'');
+    const bandeira=String(vals[15]||'');
+    const valorGA=pV(String(vals[16]||''));
+    const dv=vals[11];
+    const dataCriacao=parseAny(dv instanceof Date?dv.toISOString().slice(0,10):String(dv||''));
+    const status=String(vals[1]||'');
+    const obs=String(vals[12]||'');
+    const rec={...r,_ec:ec,_logico:logico,_cod:cod,_bandeira:bandeira,_valor:valorGA,_date:dataCriacao,_status:status,_obs:obs};
+    const key=`${ec}|${logico}`;
+    if(!gaByEcLogico[key])gaByEcLogico[key]=[];
+    gaByEcLogico[key].push(rec);
+    if(!gaByEc[ec])gaByEc[ec]=[];
+    gaByEc[ec].push(rec);
+  });
+  return ctrlRows.map(cr=>{
+    const ec=getCol(cr,'EC','ec').trim();
+    const logico=normRef(getCol(cr,'Logico','LOGICO','logico'));
+    const ref=getCol(cr,'Ref/ Chamado','Ref/Chamado','REF/ CHAMADO');
+    const valor=pV(getCol(cr,'Valor','VALOR'));
+    const analista=getCol(cr,'Analista','ANALISTA');
+    const dataEntrada=parseAny(getCol(cr,'Data Entrada','DATA ENTRADA'));
+    const dataFin=parseAny(getCol(cr,'Data','DATA'));
+    const finalizado=getCol(cr,'Finalizado','FINALIZADO');
+    const key=`${ec}|${logico}`;
+    const gaList=gaByEcLogico[key]||[];
+    const gaRec=gaList.find(r=>r._logico===logico)||gaByEc[ec]?.find(r=>r._logico===logico)||gaByEc[ec]?.[0]||null;
+    const slaDl=addBiz(dataEntrada,4);
+    const ajusteDate=gaRec?._date||null;
+    const slaOk=ajusteDate&&slaDl?ajusteDate<=slaDl:(!ajusteDate&&slaDl&&TODAY>slaDl?false:null);
+    const cod984=gaRec?/984/.test(gaRec._cod):null;
+    const logicoMatch=gaRec?gaRec._logico===logico:null;
+    const bandVisa=gaRec?/VISA/i.test(gaRec._bandeira):null;
+    const valorMatch=gaRec?Math.abs(gaRec._valor-valor)<0.05:null;
+    const issues=[];
+    if(!gaRec)issues.push('SEM_984');
+    else{
+      if(!cod984)issues.push('COD_ERRADO');
+      if(logicoMatch===false)issues.push('LOGICO_DIFF');
+      if(bandVisa===false)issues.push('BAND_ERRADA');
+      if(valorMatch===false)issues.push('VALOR_DIFF');
+    }
+    if(slaOk===false)issues.push('SLA_BCK');
+    return{ec,logico,ref,valor,analista,dataEntrada,dataFin,finalizado,
+      slaDl,ajusteDate,slaOk,cod984,logicoMatch,bandVisa,valorMatch,
+      gaValor:gaRec?._valor||null,gaBandeira:gaRec?._bandeira||'',
+      gaStatus:gaRec?._status||'',gaCod:gaRec?._cod||'',gaObs:gaRec?._obs||'',
+      gaLogico:gaRec?._logico||'',
+      issues,ok:issues.length===0,_ga:gaRec,_c:cr};
+  });
+}
+
 const MODULES=[
   {id:"5125",name:"Evento 5125",group:"Eventos",icon:"⚡",desc:"Cancelamento sem saldo · Boleto / PIX",slots:[{key:"ctrl",label:"Planilha Controle (analistas)",enc:"latin1"},{key:"ga",label:"Relatório G.A — Gestor de Ajustes",enc:"ISO-8859-1"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze5125(s.ga,s.ctrl),is5125:true},
   {id:"7922",name:"Evento 7922",group:"Eventos",icon:"📋",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha do Evento",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
-  {id:"9066",name:"Evento 9066",group:"Eventos",icon:"📋",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha do Evento",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
+  {id:"9066",name:"Evento 9066",group:"Eventos",icon:"🔧",desc:"Sinistro · Perda ou Roubo de Maquininha · D+4",slots:[{key:"ctrl",label:"Controle Sinistro (analistas)",enc:"latin1"},{key:"ga",label:"Ajustes G.A",enc:"UTF-8"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze9066(s.ga,s.ctrl),is9066:true},
   {id:"reg-fin",name:"Regularizações Financeiras",group:"Caixas de E-mail",icon:"💼",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Regularizações",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"saldo-aud",name:"Saldo Auditoria",group:"Caixas de E-mail",icon:"🔍",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Auditoria",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"gest-alug",name:"Gestão Aluguel",group:"Caixas de E-mail",icon:"🏢",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Gestão",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
@@ -362,6 +419,122 @@ const View5125=({results,onExport})=>{
   </div>);
 };
 
+const BADGES9066={
+  SEM_984:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"SEM 984"},
+  COD_ERRADO:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"CÓD ERRADO"},
+  LOGICO_DIFF:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"LÓGICO ≠"},
+  BAND_ERRADA:{bg:"rgba(179,136,255,.15)",fg:"#b388ff",txt:"BAND ≠"},
+  VALOR_DIFF:{bg:"rgba(255,171,64,.15)",fg:"#ffab40",txt:"VALOR ≠"},
+  SLA_BCK:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"⏰ SLA"},
+  OK9:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"✓ OK"},
+  ONTIME9:{bg:"rgba(0,230,118,.15)",fg:"#00e676",txt:"NO PRAZO"},
+  LATE9:{bg:"rgba(255,82,82,.15)",fg:"#ff5252",txt:"ATRASADO"},
+};
+const Badge9=({type})=>{const s=BADGES9066[type]||{bg:T.hover,fg:T.gray,txt:"—"};return<span style={{display:"inline-block",padding:"3px 8px",borderRadius:20,fontSize:10,fontWeight:700,letterSpacing:.5,background:s.bg,color:s.fg,marginRight:3,whiteSpace:"nowrap"}}>{s.txt}</span>;};
+const Check=({ok,yes,no})=>ok===true?<span style={{color:"#00e676",fontWeight:700}}>{yes||"✅"}</span>:ok===false?<span style={{color:"#ff5252",fontWeight:700}}>{no||"❌"}</span>:<span style={{color:T.muted}}>—</span>;
+
+const View9066=({results})=>{
+  const[search,setSearch]=useState("");const[onlyIssues,setOnlyIssues]=useState(false);const[expanded,setExpanded]=useState(null);const[activeFilter,setActiveFilter]=useState(null);
+  const stats=useMemo(()=>({
+    total:results.length,ok:results.filter(r=>r.ok).length,issues:results.filter(r=>!r.ok).length,
+    sem984:results.filter(r=>r.issues.includes('SEM_984')).length,
+    sla:results.filter(r=>r.slaOk===false).length,
+    logicoDiff:results.filter(r=>r.issues.includes('LOGICO_DIFF')).length,
+    valorDiff:results.filter(r=>r.issues.includes('VALOR_DIFF')).length,
+    bandErrada:results.filter(r=>r.issues.includes('BAND_ERRADA')).length,
+  }),[results]);
+  const shown=useMemo(()=>{
+    let r=results;
+    if(activeFilter==="ok")r=r.filter(x=>x.ok);
+    else if(activeFilter==="issues")r=r.filter(x=>!x.ok);
+    else if(activeFilter==="sem984")r=r.filter(x=>x.issues.includes('SEM_984'));
+    else if(activeFilter==="sla")r=r.filter(x=>x.slaOk===false);
+    else if(activeFilter==="logico")r=r.filter(x=>x.issues.includes('LOGICO_DIFF'));
+    else if(activeFilter==="valor")r=r.filter(x=>x.issues.includes('VALOR_DIFF'));
+    if(onlyIssues)r=r.filter(x=>!x.ok);
+    if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.ec.includes(s)||x.logico.includes(s)||x.ref.toLowerCase().includes(s)||x.analista.toLowerCase().includes(s));}
+    return r;
+  },[results,search,onlyIssues,activeFilter]);
+  const TH=({c})=><th style={{padding:"9px 10px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
+  const doExport=()=>{
+    const out=shown.map(r=>({'EC':r.ec,'Lógico':r.logico,'Ref/Chamado':r.ref,'Valor Controle':fV(r.valor),'Valor GA':r.gaValor!==null?fV(r.gaValor):'—','Data Entrada':fD(r.dataEntrada),'Prazo D+4':fD(r.slaDl),'Data Ajuste':fD(r.ajusteDate),'SLA':r.slaOk===true?'NO PRAZO':r.slaOk===false?'ATRASADO':'—','Cód 984':r.cod984===true?'✓':r.cod984===false?'✗':'—','Lógico OK':r.logicoMatch===true?'✓':r.logicoMatch===false?'✗':'—','Bandeira VISA':r.bandVisa===true?'✓':r.bandVisa===false?'✗':'—','Valor OK':r.valorMatch===true?'✓':r.valorMatch===false?'✗':'—','Finalizado':r.finalizado,'Analista':r.analista,'Pendências':r.issues.join(', ')||'OK'}));
+    const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'9066');XLSX.writeFile(wb,`analise_9066_${TODAY}.xlsx`);
+  };
+  return(<div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:10,marginBottom:16}}>
+      {[[stats.total,"Total",T.accent,"📊",null],[stats.ok,"OK",T.success,"✅","ok"],[stats.issues,"Pendência",T.danger,"⚠️","issues"],[stats.sem984,"Sem 984",T.danger,"🚫","sem984"],[stats.sla,"SLA",T.danger,"⏰","sla"],[stats.logicoDiff,"Lógico ≠",T.warning,"🔢","logico"],[stats.valorDiff,"Valor ≠",T.warning,"💰","valor"],[stats.bandErrada,"Bandeira ≠",T.purple,"💳",null]].map(([v,l,clr,ic,fk])=>(
+        <Stat key={l} label={l} value={v} color={clr} icon={ic} active={activeFilter===fk} onClick={()=>fk?setActiveFilter(af=>af===fk?null:fk):null}/>
+      ))}
+    </div>
+    {activeFilter&&<div style={{textAlign:"center",fontSize:11,color:T.muted,marginBottom:8}}>
+      Filtro ativo: <strong style={{color:T.accent}}>{activeFilter}</strong> · <span style={{cursor:"pointer",color:T.danger}} onClick={()=>setActiveFilter(null)}>✕ Limpar</span>
+    </div>}
+    <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar EC, lógico, referência, analista…" style={{flex:1,minWidth:200,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
+      <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,cursor:"pointer",color:T.gray}}><input type="checkbox" checked={onlyIssues} onChange={e=>setOnlyIssues(e.target.checked)} style={{accentColor:T.accent}}/>Apenas pendências</label>
+      <span style={{fontSize:12,color:T.muted}}>{shown.length}/{results.length}</span>
+      <button onClick={doExport} style={{padding:"10px 20px",background:T.accent,color:"#0a1628",border:"none",borderRadius:50,fontSize:12,fontWeight:700,cursor:"pointer"}}>⬇ Exportar XLSX</button>
+    </div>
+    <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+      <div style={{overflowX:"auto",maxHeight:"52vh",overflowY:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>
+            {["EC","Lógico (Ctrl)","Lógico (GA)","Ref/Chamado","Valor Ctrl","Valor GA","Data Entrada","Analista","Prazo D+4","Data Ajuste","SLA","Cód 984","Lógico ✓","Bandeira","Valor ✓","Situação"].map(col=><TH key={col} c={col}/>)}
+          </tr></thead>
+          <tbody>
+            {shown.map((r,i)=>(<>
+              <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:!r.ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
+                <td style={{padding:"8px 10px",fontFamily:"monospace",fontSize:10,color:T.gray}}>{r.ec}</td>
+                <td style={{padding:"8px 10px",fontWeight:700,color:T.accent}}>{r.logico}</td>
+                <td style={{padding:"8px 10px",color:r.logicoMatch===false?T.danger:r.logicoMatch?T.success:T.muted,fontFamily:"monospace"}}>{r.gaLogico||"—"}</td>
+                <td style={{padding:"8px 10px",color:T.white}}>{r.ref||"—"}</td>
+                <td style={{padding:"8px 10px",fontWeight:700,color:T.white}}>{fV(r.valor)}</td>
+                <td style={{padding:"8px 10px",color:r.valorMatch===false?T.danger:r.valorMatch?T.success:T.muted}}>{r.gaValor!==null?fV(r.gaValor):"—"}</td>
+                <td style={{padding:"8px 10px",color:T.white}}>{fD(r.dataEntrada)}</td>
+                <td style={{padding:"8px 10px",color:T.gray}}>{r.analista||"—"}</td>
+                <td style={{padding:"8px 10px",color:T.muted}}>{fD(r.slaDl)}</td>
+                <td style={{padding:"8px 10px",color:r.slaOk===false?T.danger:r.slaOk?T.success:T.muted}}>{fD(r.ajusteDate)}</td>
+                <td style={{padding:"8px 10px"}}><Badge9 type={r.slaOk===true?"ONTIME9":r.slaOk===false?"LATE9":"—"}/></td>
+                <td style={{padding:"8px 10px"}}><Check ok={r.cod984}/></td>
+                <td style={{padding:"8px 10px"}}><Check ok={r.logicoMatch}/></td>
+                <td style={{padding:"8px 10px",color:r.bandVisa===false?T.danger:r.bandVisa?T.success:T.muted,fontSize:10}}>{r.gaBandeira||"—"}</td>
+                <td style={{padding:"8px 10px"}}><Check ok={r.valorMatch}/></td>
+                <td style={{padding:"8px 10px"}}>{r.ok?<Badge9 type="OK9"/>:r.issues.map(t=><Badge9 key={t} type={t}/>)}</td>
+              </tr>
+              {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={16} style={{padding:"14px 18px"}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
+                  {[["Ref/Chamado",r.ref||"—"],["Finalizado",r.finalizado||"—"],["Data Finalização",fD(r.dataFin)],["Analista",r.analista||"—"],["Cód GA",r.gaCod||"—"],["Status GA",r.gaStatus||"—"],["Observação GA",r.gaObs||"—"],["Prazo SLA D+4",fD(r.slaDl)]].map(([l,v])=>(
+                    <div key={l} style={{background:T.card,padding:"9px 12px",borderRadius:8,border:`1px solid ${T.border}`}}>
+                      <div style={{fontSize:9,color:T.muted,marginBottom:3,letterSpacing:.5}}>{l.toUpperCase()}</div>
+                      <div style={{fontWeight:600,color:T.white,fontSize:12,wordBreak:"break-word"}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
+                  {[["Cód 984",r.cod984===true?"✅ Correto":r.cod984===false?"❌ Errado":"—"],["Lógico Ctrl",r.logico],["Lógico GA",r.gaLogico||"—"],["Match Lógico",r.logicoMatch===true?"✅ Bate":r.logicoMatch===false?"❌ Diverge":"—"],["Bandeira",r.gaBandeira||"—"],["É VISA?",r.bandVisa===true?"✅ Sim":r.bandVisa===false?"❌ Não":"—"],["Valor Controle",fV(r.valor)],["Valor GA",r.gaValor!==null?fV(r.gaValor):"—"],["Match Valor",r.valorMatch===true?"✅ Bate":r.valorMatch===false?"❌ Diverge":"—"],["Dias p/ SLA",r.dataEntrada&&r.ajusteDate?`${Math.round((new Date(r.ajusteDate)-new Date(r.dataEntrada))/86400000)} dias corridos`:"—"]].map(([l,v])=>(
+                    <div key={l} style={{background:"#0d1a2a",padding:"8px 10px",borderRadius:6,border:`1px solid #1a2a3a`}}>
+                      <div style={{fontSize:9,color:T.muted,marginBottom:2,letterSpacing:.4}}>{l.toUpperCase()}</div>
+                      <div style={{fontWeight:600,color:T.white,fontSize:11,wordBreak:"break-word"}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </td></tr>)}
+            </>))}
+          </tbody>
+        </table>
+        {shown.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>Nenhum registro encontrado.</div>}
+      </div>
+    </div>
+    <div style={{marginTop:10,display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+      <span style={{fontSize:11,color:T.gray,fontWeight:700}}>Legenda:</span>
+      {[["Sem 984","SEM_984"],["Cód Errado","COD_ERRADO"],["Lógico ≠","LOGICO_DIFF"],["Valor ≠","VALOR_DIFF"],["SLA","SLA_BCK"],["OK","OK9"]].map(([l,t])=>(
+        <span key={t} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:T.gray}}><Badge9 type={t}/>{l}</span>
+      ))}
+      <span style={{fontSize:10,color:T.muted,marginLeft:"auto"}}>SLA D+4 úteis a partir da Data Entrada · Feriados nacionais excluídos</span>
+    </div>
+  </div>);
+};
+
 const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
   const mod=MODULE_BY_ID[moduleId];const slotData=files[moduleId]||{};const moduleResults=results[moduleId]||null;
   const setSlot=(key,data)=>setFiles(f=>({...f,[moduleId]:{...f[moduleId],[key]:data}}));
@@ -377,7 +550,7 @@ const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
       {mod.slots.map(s=><UploadZone key={s.key} label={s.label} count={slotData[s.key]?.length||0} onFile={d=>setSlot(s.key,d)} enc={s.enc}/>)}
       <button onClick={run} disabled={!mod.canRun(slotData)} style={{padding:"0 28px",height:60,border:"none",borderRadius:50,fontSize:13,fontWeight:900,letterSpacing:.5,whiteSpace:"nowrap",background:mod.canRun(slotData)?T.accent:T.muted,color:mod.canRun(slotData)?"#000":T.card,cursor:mod.canRun(slotData)?"pointer":"not-allowed",boxShadow:mod.canRun(slotData)?`0 4px 20px ${T.accent}55`:"none"}}>▶ ANALISAR</button>
     </div>
-    {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/>}
+    {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/> }{moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}
     {moduleResults&&!mod.is5125&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
     {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
   </div>);
