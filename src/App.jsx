@@ -181,7 +181,9 @@ function analyze9066(gaRows,ctrlRows){
     if(!gaByEc[ec])gaByEc[ec]=[];
     gaByEc[ec].push(rec);
   });
-  return ctrlRows.map(cr=>{
+  return ctrlRows
+    .filter(cr=>getCol(cr,'EC','ec').trim()&&getCol(cr,'Logico','LOGICO','logico').trim())
+    .map(cr=>{
     const ec=getCol(cr,'EC','ec').trim();
     const logico=normRef(getCol(cr,'Logico','LOGICO','logico'));
     const ref=getCol(cr,'Ref/ Chamado','Ref/Chamado','REF/ CHAMADO');
