@@ -222,9 +222,8 @@ function analyze9066(gaRows,ctrlRows){
 
 const TAXA_TABLE={"VISA|D":0.85,"VISA|0":3.08,"VISA|2":4.25,"VISA|3":4.86,"VISA|4":5.45,"VISA|5":6.00,"VISA|6":6.57,"VISA|7":7.63,"VISA|8":8.14,"VISA|9":8.70,"VISA|10":9.24,"VISA|11":9.76,"VISA|12":10.26,"MASTERCARD|D":0.85,"MASTERCARD|0":3.08,"MASTERCARD|2":4.25,"MASTERCARD|3":4.86,"MASTERCARD|4":5.45,"MASTERCARD|5":6.00,"MASTERCARD|6":6.57,"MASTERCARD|7":7.63,"MASTERCARD|8":8.14,"MASTERCARD|9":8.70,"MASTERCARD|10":9.24,"MASTERCARD|11":9.76,"MASTERCARD|12":10.26,"ELO|D":1.48,"ELO|0":3.48,"ELO|2":4.93,"ELO|3":5.54,"ELO|4":6.13,"ELO|5":6.68,"ELO|6":7.25,"ELO|7":8.13,"ELO|8":8.64,"ELO|9":9.20,"ELO|10":9.74,"ELO|11":10.26,"ELO|12":10.76,"AMEX|0":3.48,"AMEX|2":4.66,"AMEX|3":5.27,"AMEX|4":5.86,"AMEX|5":6.41,"AMEX|6":6.98,"AMEX|7":8.13,"AMEX|8":8.64,"AMEX|9":9.20,"AMEX|10":9.74,"AMEX|11":10.26,"AMEX|12":10.76,"DINERS|0":3.19,"DINERS|2":4.12,"DINERS|3":4.73,"DINERS|4":5.32,"DINERS|5":5.87,"DINERS|6":6.44,"DINERS|7":7.13,"DINERS|8":7.64,"DINERS|9":8.20,"DINERS|10":8.74,"DINERS|11":9.26,"DINERS|12":9.76,"HIPERCARD|0":5.72,"HIPERCARD|2":6.99,"HIPERCARD|3":7.60,"HIPERCARD|4":8.19,"HIPERCARD|5":8.74,"HIPERCARD|6":9.31,"HIPERCARD|7":8.68,"HIPERCARD|8":9.19,"HIPERCARD|9":9.75,"HIPERCARD|10":10.29,"HIPERCARD|11":10.81,"HIPERCARD|12":11.31,"AGIPLAN|0":3.65,"AGIPLAN|2":6.40,"AGIPLAN|3":7.01,"AGIPLAN|4":7.85,"AGIPLAN|5":8.40,"AGIPLAN|6":8.97,"AGIPLAN|7":9.84,"AGIPLAN|8":10.35,"AGIPLAN|9":10.91,"AGIPLAN|10":11.45,"AGIPLAN|11":11.97,"AGIPLAN|12":12.47,"BANESCARD|D":2.45,"BANESCARD|0":4.88,"BANESCARD|2":6.40,"BANESCARD|3":7.01,"BANESCARD|4":7.85,"BANESCARD|5":8.40,"BANESCARD|6":8.97,"BANESCARD|7":9.84,"BANESCARD|8":10.35,"BANESCARD|9":10.91,"BANESCARD|10":11.45,"BANESCARD|11":11.97,"BANESCARD|12":12.47,"SOROCRED|0":4.88,"SOROCRED|2":6.40,"SOROCRED|3":7.01,"SOROCRED|4":7.85,"SOROCRED|5":8.40,"SOROCRED|6":8.97,"SOROCRED|7":9.84,"SOROCRED|8":10.35,"SOROCRED|9":10.91,"SOROCRED|10":11.45,"SOROCRED|11":11.97,"SOROCRED|12":12.47,"CABAL|D":2.45,"CABAL|0":4.88,"CABAL|2":6.40,"CABAL|3":7.01,"CABAL|4":7.85,"CABAL|5":8.40,"CABAL|6":8.97,"CABAL|7":9.84,"CABAL|8":10.35,"CABAL|9":10.91,"CABAL|10":11.45,"CABAL|11":11.97,"CABAL|12":12.47};
 
-function getTaxaCorreta(produto,parcelas){
+function detectBandeira(produto){
   const p=String(produto||'').toUpperCase().trim();
-  const parc=parseInt(parcelas)||0;
   let b='VISA';
   if(p.includes('MASTERCARD')||p.includes('MAESTRO')) b='MASTERCARD';
   else if(p.includes('ELO')) b='ELO';
@@ -235,9 +234,50 @@ function getTaxaCorreta(produto,parcelas){
   else if(p.includes('BANESCARD')) b='BANESCARD';
   else if(p.includes('SOROCRED')) b='SOROCRED';
   else if(p.includes('CABAL')) b='CABAL';
-  const isDebito=p.includes('DEBITO')||p.includes('MAESTRO');
-  const tk=isDebito?'D':parc>1?String(parc):'0';
-  return TAXA_TABLE[`${b}|${tk}`]||null;
+  else if(p.includes('VISA')) b='VISA';
+  const isDebito=p.includes('DEBITO')||p.includes('DÉBITO')||p.includes('MAESTRO');
+  return{bandeira:b,isDebito};
+}
+
+// Token de parcela usado como sufixo da chave: 'D' = débito, '0' = à vista, ou o nº de parcelas (2..12)
+const parcTokenNum=(parc,isDebito)=>isDebito?'D':parc>1?String(parc):'0';
+const parcTokenRaw=(raw,isDebito)=>{
+  if(isDebito) return 'D';
+  const s=String(raw||'').toUpperCase();
+  if(s.includes('VISTA')) return '0';
+  const n=parseInt(s.replace(/\D+/g,''))||0;
+  return n>1?String(n):'0';
+};
+
+// Monta o mapa de taxas específicas por EC a partir da 3ª planilha (EC | Produto Cielo | Parcelas | Taxa %)
+function buildTaxaMap(taxasRaw){
+  const map={};
+  (taxasRaw||[]).forEach(r=>{
+    const ec=String(getCol(r,'EC','Número do EC','Numero do EC','EC Cielo','Estabelecimento')||'').trim();
+    const produto=String(getCol(r,'Produto Cielo','Produto cielo','Bandeira','Produto')||'').trim();
+    if(!ec||!produto) return;
+    const tipoVenda=String(getCol(r,'Tipo da Venda','Tipo de Venda','Tipo Venda')||'').trim();
+    const parcRaw=getCol(r,'Parcelas','Quantidade de Parcelas','Qtd Parcelas','Nº Parcelas','Parcela');
+    const taxaRaw=String(getCol(r,'Taxa %','Taxa%','Taxa','Taxa Atual','Taxa atual')||'').replace('%','').trim();
+    const taxa=pV(taxaRaw);
+    if(!taxa) return;
+    const{bandeira,isDebito}=detectBandeira(`${produto} ${tipoVenda}`);
+    const tk=parcTokenRaw(parcRaw,isDebito);
+    map[`${ec}|${bandeira}|${tk}`]=taxa;
+  });
+  return map;
+}
+
+// Resolve a taxa correta: 1º tenta a tarifa específica do EC (3ª planilha), senão cai na tabela padrão Cielo
+function getTaxaCorreta(produto,parcelas,ec,taxaMap){
+  const{bandeira,isDebito}=detectBandeira(produto);
+  const parc=parseInt(parcelas)||0;
+  const tk=parcTokenNum(parc,isDebito);
+  const ecKey=ec?`${String(ec).trim()}|${bandeira}|${tk}`:null;
+  if(ecKey&&taxaMap&&taxaMap[ecKey]!==undefined) return{taxa:taxaMap[ecKey],origem:'EC'};
+  const padrao=TAXA_TABLE[`${bandeira}|${tk}`];
+  if(padrao!==undefined) return{taxa:padrao,origem:'PADRAO'};
+  return{taxa:null,origem:null};
 }
 
 function parseSIEFile(rawRows){
@@ -257,7 +297,8 @@ function parseSIEFile(rawRows){
   return rawRows;
 }
 
-function analyzeComissaoMinima(sieRaw,analRaw){
+function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
+  const taxaMap=buildTaxaMap(taxasRaw);
   const sieRows=parseSIEFile(sieRaw).filter(r=>{
     const flag=String(getCol(r,'Flag MDR Mínimo','Flag MDR','FLAG MDR MÍNIMO')||'').trim().toLowerCase();
     return flag==='sim';
@@ -277,7 +318,7 @@ function analyzeComissaoMinima(sieRaw,analRaw){
     const dtTrans=getCol(r,'Data da Transação','Data da Transacao');
     const ec=String(getCol(r,'Número do EC','EC')||'').trim();
     const ro=String(getCol(r,'Número RO')||'').trim();
-    const taxaCorreta=getTaxaCorreta(produto,parcelas);
+    const{taxa:taxaCorreta,origem:taxaOrigem}=getTaxaCorreta(produto,parcelas,ec,taxaMap);
     const comissaoCorreta=taxaCorreta!==null?Math.round(vt*(taxaCorreta/100)*10000)/10000:null;
     const difSistema=comissaoCorreta!==null?Math.round((vcb-comissaoCorreta)*10000)/10000:null;
     const anal=analByAuth[auth]||null;
@@ -288,10 +329,11 @@ function analyzeComissaoMinima(sieRaw,analRaw){
     const difMatch=difSistema!==null&&difAnal!==null?Math.abs(difSistema-difAnal)<0.005:null;
     const issues=[];
     if(taxaCorreta===null) issues.push('TAXA_NAO_ENCONTRADA');
+    if(taxaOrigem==='PADRAO') issues.push('SEM_TAXA_EC');
     if(!anal) issues.push('SEM_ANALISTA');
     else if(taxaMatch===false) issues.push('TAXA_DIVERGE');
     else if(difMatch===false) issues.push('CALCULO_DIVERGE');
-    return{ec,auth,ro,produto,parcelas,dtTrans,vt,vcb,pctDesc,taxaCorreta,comissaoCorreta,difSistema,taxaAnal,comissaoAnal,difAnal,taxaMatch,difMatch,hasAnal:!!anal,issues,ok:issues.length===0};
+    return{ec,auth,ro,produto,parcelas,dtTrans,vt,vcb,pctDesc,taxaCorreta,taxaOrigem,comissaoCorreta,difSistema,taxaAnal,comissaoAnal,difAnal,taxaMatch,difMatch,hasAnal:!!anal,issues,ok:issues.length===0&&taxaOrigem!=='PADRAO'};
   });
   const byProd={};
   rows.forEach(r=>{
@@ -317,9 +359,10 @@ const MODULES=[
     slots:[
       {key:"sie",label:"Faturamento Contábil EC — SIE",enc:"UTF-8"},
       {key:"anal",label:"Planilha do Analista (com cálculo)",enc:"UTF-8"},
+      {key:"taxas",label:"Tabela de Taxas por EC (EC | Produto Cielo | Parcelas | Taxa %)",enc:"UTF-8"},
     ],
-    canRun:s=>s.sie?.length>0&&s.anal?.length>0,
-    run:s=>analyzeComissaoMinima(s.sie,s.anal),
+    canRun:s=>s.sie?.length>0&&s.anal?.length>0&&s.taxas?.length>0,
+    run:s=>analyzeComissaoMinima(s.sie,s.anal,s.taxas),
     isComissao:true},
   {id:"saldo-aud",name:"Saldo Auditoria",group:"Caixas de E-mail",icon:"🔍",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Auditoria",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"gest-alug",name:"Gestão Aluguel",group:"Caixas de E-mail",icon:"🏢",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Gestão",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
@@ -640,6 +683,7 @@ const ViewComissao=({results})=>{
   const totalDifSistema=summary.reduce((s,r)=>s+r.totalDifSistema,0);
   const totalDifAnal=summary.reduce((s,r)=>s+r.totalDifAnal,0);
   const totalDiv=rows.filter(r=>!r.ok).length;
+  const totalSemTaxaEc=rows.filter(r=>r.taxaOrigem==='PADRAO').length;
 
   const shown=useMemo(()=>{
     let r=rows;
@@ -649,7 +693,7 @@ const ViewComissao=({results})=>{
   },[rows,search,onlyDiv]);
 
   const doExport=()=>{
-    const out=rows.map(r=>({'EC':r.ec,'Autorização':r.auth,'Produto':r.produto,'Parcelas':r.parcelas||0,'Data':r.dtTrans,'Valor Transação':r.vt,'VCB':r.vcb,'Taxa Sistema%':r.taxaCorreta,'Comissão Sistema':r.comissaoCorreta,'Diferença Sistema':r.difSistema,'Taxa Analista%':r.taxaAnal,'Comissão Analista':r.comissaoAnal,'Diferença Analista':r.difAnal,'Taxa Match':r.taxaMatch?'✓':'✗','Pendência':r.issues.join(', ')||'OK'}));
+    const out=rows.map(r=>({'EC':r.ec,'Autorização':r.auth,'Produto':r.produto,'Parcelas':r.parcelas||0,'Data':r.dtTrans,'Valor Transação':r.vt,'VCB':r.vcb,'Taxa Sistema%':r.taxaCorreta,'Origem Taxa':r.taxaOrigem==='EC'?'Tarifa do EC':r.taxaOrigem==='PADRAO'?'Tabela padrão':'—','Comissão Sistema':r.comissaoCorreta,'Diferença Sistema':r.difSistema,'Taxa Analista%':r.taxaAnal,'Comissão Analista':r.comissaoAnal,'Diferença Analista':r.difAnal,'Taxa Match':r.taxaMatch?'✓':'✗','Pendência':r.issues.join(', ')||'OK'}));
     const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'ComissaoMinima');XLSX.writeFile(wb,`comissao_minima_${TODAY}.xlsx`);
   };
 
@@ -657,8 +701,8 @@ const ViewComissao=({results})=>{
 
   return(<div>
     {/* Summary cards */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-      {[[rows.length,"Transações (Flag=Sim)",T.accent,"📊"],[summary.length,"Produtos únicos",T.success,"📦"],[totalDiv,"Divergências",T.danger,"⚠️"],[totalDifSistema,"Total Estorno (Sistema)",T.warning,"💰"]].map(([v,l,clr,ic])=>(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:20}}>
+      {[[rows.length,"Transações (Flag=Sim)",T.accent,"📊"],[summary.length,"Produtos únicos",T.success,"📦"],[totalDiv,"Divergências",T.danger,"⚠️"],[totalSemTaxaEc,"Sem tarifa do EC (padrão)",T.purple,"❔"],[totalDifSistema,"Total Estorno (Sistema)",T.warning,"💰"]].map(([v,l,clr,ic])=>(
         <Stat key={l} label={l} value={typeof v==="number"&&v>10?fV(v):v} color={clr} icon={ic}/>
       ))}
     </div>
@@ -713,6 +757,7 @@ const ViewComissao=({results})=>{
         </div>
         <div style={{marginTop:10,padding:"12px 16px",background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12,color:T.gray}}>
           <strong style={{color:T.white}}>Como interpretar:</strong> "Estorno" = VCB - Comissão Correta. Positivo = cliente foi cobrado a mais (MDR mínimo aplicado incorretamente). É o valor a ser creditado de volta ao cliente via ajuste C005/D005.
+          A taxa correta é buscada primeiro na tabela de taxas por EC (3º upload); quando o EC não tem tarifa cadastrada pra aquele produto/parcela, o sistema usa a tabela padrão da Cielo e sinaliza a transação como "SEM TAXA EC" pra revisão manual.
         </div>
       </div>
     )}
@@ -731,7 +776,7 @@ const ViewComissao=({results})=>{
           <div style={{overflowX:"auto",maxHeight:"50vh",overflowY:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
               <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>
-                {["Autorização","Produto","Parcelas","Data","Valor Trans.","VCB","% Sistema","Comiss. Sistema","Est. Sistema","% Analista","Comiss. Analista","Est. Analista","Taxa OK?","Situação"].map(h=><TH key={h} c={h}/>)}
+                {["Autorização","Produto","Parcelas","Data","Valor Trans.","VCB","% Sistema","Origem","Comiss. Sistema","Est. Sistema","% Analista","Comiss. Analista","Est. Analista","Taxa OK?","Situação"].map(h=><TH key={h} c={h}/>)}
               </tr></thead>
               <tbody>
                 {shown.filter(r=>tab==="diff"?!r.ok:true).map((r,i)=>(
@@ -744,18 +789,19 @@ const ViewComissao=({results})=>{
                       <td style={{padding:"8px 10px",fontWeight:600,color:T.white}}>{fV(r.vt)}</td>
                       <td style={{padding:"8px 10px",color:T.white}}>{fV(r.vcb)}</td>
                       <td style={{padding:"8px 10px",color:T.accent,fontWeight:700}}>{r.taxaCorreta!==null?`${r.taxaCorreta}%`:"—"}</td>
+                      <td style={{padding:"8px 10px"}}>{r.taxaOrigem==='EC'?<span style={{background:"rgba(0,230,118,.15)",color:T.success,padding:"2px 7px",borderRadius:10,fontSize:9,fontWeight:700}}>EC</span>:r.taxaOrigem==='PADRAO'?<span style={{background:"rgba(179,136,255,.15)",color:T.purple,padding:"2px 7px",borderRadius:10,fontSize:9,fontWeight:700}}>PADRÃO</span>:<span style={{color:T.muted}}>—</span>}</td>
                       <td style={{padding:"8px 10px",color:T.accent}}>{r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"}</td>
                       <td style={{padding:"8px 10px",fontWeight:700,color:r.difSistema>0?T.warning:T.success}}>{r.difSistema!==null?fV(r.difSistema):"—"}</td>
                       <td style={{padding:"8px 10px",color:r.taxaMatch===false?T.danger:T.gray}}>{r.taxaAnal!==null?`${r.taxaAnal}%`:"—"}</td>
                       <td style={{padding:"8px 10px",color:T.gray}}>{r.comissaoAnal!==null?fV(r.comissaoAnal):"—"}</td>
                       <td style={{padding:"8px 10px",color:r.difMatch===false?T.danger:T.gray}}>{r.difAnal!==null?fV(r.difAnal):"—"}</td>
                       <td style={{padding:"8px 10px"}}>{r.taxaMatch===true?<span style={{color:T.success}}>✅</span>:r.taxaMatch===false?<span style={{color:T.danger}}>❌</span>:<span style={{color:T.muted}}>—</span>}</td>
-                      <td style={{padding:"8px 10px"}}>{r.ok?<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>:r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{iss.replace('_',' ')}</span>)}</td>
+                      <td style={{padding:"8px 10px"}}>{r.ok?<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>:r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{iss.replace(/_/g,' ')}</span>)}</td>
                     </tr>
-                    {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={14} style={{padding:"12px 16px"}}>
+                    {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={15} style={{padding:"12px 16px"}}>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
                         {[["EC",r.ec],["Número RO",r.ro||"—"],["Percentual Desconto Cobrado",`${r.pctDesc}%`],["Parcelas",r.parcelas||"À vista"],
-                          ["Taxa Sistema",r.taxaCorreta!==null?`${r.taxaCorreta}%`:"Não encontrada"],["Comissão Sistema",r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"],["Estorno Sistema",r.difSistema!==null?fV(r.difSistema):"—"],
+                          ["Taxa Sistema",r.taxaCorreta!==null?`${r.taxaCorreta}%`:"Não encontrada"],["Origem da Taxa",r.taxaOrigem==='EC'?"✅ Tarifa específica do EC":r.taxaOrigem==='PADRAO'?"❔ Tabela padrão (EC não cadastrado)":"—"],["Comissão Sistema",r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"],["Estorno Sistema",r.difSistema!==null?fV(r.difSistema):"—"],
                           ["Taxa Analista",r.taxaAnal!==null?`${r.taxaAnal}%`:"—"],["Comissão Analista",r.comissaoAnal!==null?fV(r.comissaoAnal):"—"],["Estorno Analista",r.difAnal!==null?fV(r.difAnal):"—"],
                           ["Taxa correta?",r.taxaMatch===true?"✅ Sim":r.taxaMatch===false?"❌ Não":"—"],["Cálculo correto?",r.difMatch===true?"✅ Sim":r.difMatch===false?"❌ Não":"—"]
                         ].map(([l,v])=>(
