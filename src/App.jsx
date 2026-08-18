@@ -220,11 +220,107 @@ function analyze9066(gaRows,ctrlRows){
   });
 }
 
+const TAXA_TABLE={"VISA|D":0.85,"VISA|0":3.08,"VISA|2":4.25,"VISA|3":4.86,"VISA|4":5.45,"VISA|5":6.00,"VISA|6":6.57,"VISA|7":7.63,"VISA|8":8.14,"VISA|9":8.70,"VISA|10":9.24,"VISA|11":9.76,"VISA|12":10.26,"MASTERCARD|D":0.85,"MASTERCARD|0":3.08,"MASTERCARD|2":4.25,"MASTERCARD|3":4.86,"MASTERCARD|4":5.45,"MASTERCARD|5":6.00,"MASTERCARD|6":6.57,"MASTERCARD|7":7.63,"MASTERCARD|8":8.14,"MASTERCARD|9":8.70,"MASTERCARD|10":9.24,"MASTERCARD|11":9.76,"MASTERCARD|12":10.26,"ELO|D":1.48,"ELO|0":3.48,"ELO|2":4.93,"ELO|3":5.54,"ELO|4":6.13,"ELO|5":6.68,"ELO|6":7.25,"ELO|7":8.13,"ELO|8":8.64,"ELO|9":9.20,"ELO|10":9.74,"ELO|11":10.26,"ELO|12":10.76,"AMEX|0":3.48,"AMEX|2":4.66,"AMEX|3":5.27,"AMEX|4":5.86,"AMEX|5":6.41,"AMEX|6":6.98,"AMEX|7":8.13,"AMEX|8":8.64,"AMEX|9":9.20,"AMEX|10":9.74,"AMEX|11":10.26,"AMEX|12":10.76,"DINERS|0":3.19,"DINERS|2":4.12,"DINERS|3":4.73,"DINERS|4":5.32,"DINERS|5":5.87,"DINERS|6":6.44,"DINERS|7":7.13,"DINERS|8":7.64,"DINERS|9":8.20,"DINERS|10":8.74,"DINERS|11":9.26,"DINERS|12":9.76,"HIPERCARD|0":5.72,"HIPERCARD|2":6.99,"HIPERCARD|3":7.60,"HIPERCARD|4":8.19,"HIPERCARD|5":8.74,"HIPERCARD|6":9.31,"HIPERCARD|7":8.68,"HIPERCARD|8":9.19,"HIPERCARD|9":9.75,"HIPERCARD|10":10.29,"HIPERCARD|11":10.81,"HIPERCARD|12":11.31,"AGIPLAN|0":3.65,"AGIPLAN|2":6.40,"AGIPLAN|3":7.01,"AGIPLAN|4":7.85,"AGIPLAN|5":8.40,"AGIPLAN|6":8.97,"AGIPLAN|7":9.84,"AGIPLAN|8":10.35,"AGIPLAN|9":10.91,"AGIPLAN|10":11.45,"AGIPLAN|11":11.97,"AGIPLAN|12":12.47,"BANESCARD|D":2.45,"BANESCARD|0":4.88,"BANESCARD|2":6.40,"BANESCARD|3":7.01,"BANESCARD|4":7.85,"BANESCARD|5":8.40,"BANESCARD|6":8.97,"BANESCARD|7":9.84,"BANESCARD|8":10.35,"BANESCARD|9":10.91,"BANESCARD|10":11.45,"BANESCARD|11":11.97,"BANESCARD|12":12.47,"SOROCRED|0":4.88,"SOROCRED|2":6.40,"SOROCRED|3":7.01,"SOROCRED|4":7.85,"SOROCRED|5":8.40,"SOROCRED|6":8.97,"SOROCRED|7":9.84,"SOROCRED|8":10.35,"SOROCRED|9":10.91,"SOROCRED|10":11.45,"SOROCRED|11":11.97,"SOROCRED|12":12.47,"CABAL|D":2.45,"CABAL|0":4.88,"CABAL|2":6.40,"CABAL|3":7.01,"CABAL|4":7.85,"CABAL|5":8.40,"CABAL|6":8.97,"CABAL|7":9.84,"CABAL|8":10.35,"CABAL|9":10.91,"CABAL|10":11.45,"CABAL|11":11.97,"CABAL|12":12.47};
+
+function getTaxaCorreta(produto,parcelas){
+  const p=String(produto||'').toUpperCase().trim();
+  const parc=parseInt(parcelas)||0;
+  let b='VISA';
+  if(p.includes('MASTERCARD')||p.includes('MAESTRO')) b='MASTERCARD';
+  else if(p.includes('ELO')) b='ELO';
+  else if(p.includes('AMEX')) b='AMEX';
+  else if(p.includes('DINERS')) b='DINERS';
+  else if(p.includes('HIPERCARD')||p.includes('HIPER')) b='HIPERCARD';
+  else if(p.includes('AGIPLAN')) b='AGIPLAN';
+  else if(p.includes('BANESCARD')) b='BANESCARD';
+  else if(p.includes('SOROCRED')) b='SOROCRED';
+  else if(p.includes('CABAL')) b='CABAL';
+  const isDebito=p.includes('DEBITO')||p.includes('MAESTRO');
+  const tk=isDebito?'D':parc>1?String(parc):'0';
+  return TAXA_TABLE[`${b}|${tk}`]||null;
+}
+
+function parseSIEFile(rawRows){
+  if(!rawRows||!rawRows.length) return [];
+  const vals0=Object.values(rawRows[0]||{});
+  const first=String(vals0[0]||'');
+  if(first.includes('Faturamento')||first.includes('Cont')){
+    const hRow=rawRows.find(r=>Object.values(r).some(v=>String(v||'').includes('Produto')||String(v||'').includes('Flag MDR')));
+    if(!hRow) return rawRows;
+    const hIdx=rawRows.indexOf(hRow);
+    const hVals=Object.values(hRow);
+    return rawRows.slice(hIdx+1).map(row=>{
+      const rv=Object.values(row);
+      return Object.fromEntries(hVals.map((h,i)=>[h||`_c${i}`,rv[i]]));
+    }).filter(r=>Object.values(r).some(v=>v!==''&&v!=null));
+  }
+  return rawRows;
+}
+
+function analyzeComissaoMinima(sieRaw,analRaw){
+  const sieRows=parseSIEFile(sieRaw).filter(r=>{
+    const flag=String(getCol(r,'Flag MDR Mínimo','Flag MDR','FLAG MDR MÍNIMO')||'').trim().toLowerCase();
+    return flag==='sim';
+  });
+  const analByAuth={};
+  analRaw.forEach(r=>{
+    const auth=String(r['Autorização']||r['Autorizacao']||'').trim();
+    if(auth) analByAuth[auth]=r;
+  });
+  const rows=sieRows.map(r=>{
+    const produto=String(getCol(r,'Produto cielo','Produto Cielo')||'').trim();
+    const parcelas=parseInt(getCol(r,'Quantidade de Parcelas','Parcelas')||0)||0;
+    const vt=pV(String(getCol(r,'Valor da Transação','Valor da Transacao')||0));
+    const vcb=pV(String(getCol(r,'Valor Comissão Bruta','Valor Comissao Bruta')||0));
+    const pctDesc=pV(String(getCol(r,'Percentual de Desconto')||0));
+    const auth=String(getCol(r,'Código Autorização (Transação)','Codigo Autorizacao')||'').trim();
+    const dtTrans=getCol(r,'Data da Transação','Data da Transacao');
+    const ec=String(getCol(r,'Número do EC','EC')||'').trim();
+    const ro=String(getCol(r,'Número RO')||'').trim();
+    const taxaCorreta=getTaxaCorreta(produto,parcelas);
+    const comissaoCorreta=taxaCorreta!==null?Math.round(vt*(taxaCorreta/100)*10000)/10000:null;
+    const difSistema=comissaoCorreta!==null?Math.round((vcb-comissaoCorreta)*10000)/10000:null;
+    const anal=analByAuth[auth]||null;
+    const taxaAnal=anal?pV(String(anal['Taxa %']||anal['Taxa%']||0)):null;
+    const comissaoAnal=anal?pV(String(anal['Comissão']||anal['Comissao']||0)):null;
+    const difAnal=anal?pV(String(anal['Diferença']||anal['Diferenca']||0)):null;
+    const taxaMatch=taxaCorreta!==null&&taxaAnal!==null?Math.abs(taxaCorreta-taxaAnal)<0.001:null;
+    const difMatch=difSistema!==null&&difAnal!==null?Math.abs(difSistema-difAnal)<0.005:null;
+    const issues=[];
+    if(taxaCorreta===null) issues.push('TAXA_NAO_ENCONTRADA');
+    if(!anal) issues.push('SEM_ANALISTA');
+    else if(taxaMatch===false) issues.push('TAXA_DIVERGE');
+    else if(difMatch===false) issues.push('CALCULO_DIVERGE');
+    return{ec,auth,ro,produto,parcelas,dtTrans,vt,vcb,pctDesc,taxaCorreta,comissaoCorreta,difSistema,taxaAnal,comissaoAnal,difAnal,taxaMatch,difMatch,hasAnal:!!anal,issues,ok:issues.length===0};
+  });
+  const byProd={};
+  rows.forEach(r=>{
+    const k=r.produto;
+    if(!byProd[k]) byProd[k]={produto:k,qtd:0,totalVCB:0,totalCSistema:0,totalDifSistema:0,totalCAnal:0,totalDifAnal:0,divergencias:0};
+    byProd[k].qtd++;
+    byProd[k].totalVCB+=r.vcb;
+    if(r.comissaoCorreta!==null) byProd[k].totalCSistema+=r.comissaoCorreta;
+    if(r.difSistema!==null) byProd[k].totalDifSistema+=r.difSistema;
+    if(r.comissaoAnal!==null) byProd[k].totalCAnal+=r.comissaoAnal;
+    if(r.difAnal!==null) byProd[k].totalDifAnal+=r.difAnal;
+    if(!r.ok) byProd[k].divergencias++;
+  });
+  return{rows,summary:Object.values(byProd)};
+}
+
+
 const MODULES=[
   {id:"5125",name:"Evento 5125",group:"Eventos",icon:"⚡",desc:"Cancelamento sem saldo · Boleto / PIX",slots:[{key:"ctrl",label:"Planilha Controle (analistas)",enc:"latin1"},{key:"ga",label:"Relatório G.A — Gestor de Ajustes",enc:"ISO-8859-1"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze5125(s.ga,s.ctrl),is5125:true},
   {id:"7922",name:"Evento 7922",group:"Eventos",icon:"📋",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha do Evento",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"9066",name:"Evento 9066",group:"Eventos",icon:"🔧",desc:"Sinistro · Perda ou Roubo de Maquininha · D+4",slots:[{key:"ctrl",label:"Controle Sinistro (analistas)",enc:"latin1"},{key:"ga",label:"Ajustes G.A",enc:"UTF-8"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze9066(s.ga,s.ctrl),is9066:true},
-  {id:"reg-fin",name:"Regularizações Financeiras",group:"Caixas de E-mail",icon:"💼",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Regularizações",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
+  {id:"reg-fin",name:"Regularizações Financeiras",group:"Caixas de E-mail",icon:"💼",desc:"Comissão Mínima — MDR incorreto cobrado ao cliente",
+    slots:[
+      {key:"sie",label:"Faturamento Contábil EC — SIE",enc:"UTF-8"},
+      {key:"anal",label:"Planilha do Analista (com cálculo)",enc:"UTF-8"},
+    ],
+    canRun:s=>s.sie?.length>0&&s.anal?.length>0,
+    run:s=>analyzeComissaoMinima(s.sie,s.anal),
+    isComissao:true},
   {id:"saldo-aud",name:"Saldo Auditoria",group:"Caixas de E-mail",icon:"🔍",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Auditoria",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"gest-alug",name:"Gestão Aluguel",group:"Caixas de E-mail",icon:"🏢",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Gestão",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
   {id:"est-alug",name:"Estorno Gestão Aluguel",group:"Caixas de E-mail",icon:"↩️",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha de Estornos",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
@@ -537,6 +633,158 @@ const View9066=({results})=>{
   </div>);
 };
 
+const ViewComissao=({results})=>{
+  const{rows,summary}=results;
+  const[search,setSearch]=useState("");const[tab,setTab]=useState("summary");const[expanded,setExpanded]=useState(null);
+  const[onlyDiv,setOnlyDiv]=useState(false);
+  const totalDifSistema=summary.reduce((s,r)=>s+r.totalDifSistema,0);
+  const totalDifAnal=summary.reduce((s,r)=>s+r.totalDifAnal,0);
+  const totalDiv=rows.filter(r=>!r.ok).length;
+
+  const shown=useMemo(()=>{
+    let r=rows;
+    if(onlyDiv) r=r.filter(x=>!x.ok);
+    if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.produto.toLowerCase().includes(s)||x.auth.includes(s)||x.ec.includes(s));}
+    return r;
+  },[rows,search,onlyDiv]);
+
+  const doExport=()=>{
+    const out=rows.map(r=>({'EC':r.ec,'Autorização':r.auth,'Produto':r.produto,'Parcelas':r.parcelas||0,'Data':r.dtTrans,'Valor Transação':r.vt,'VCB':r.vcb,'Taxa Sistema%':r.taxaCorreta,'Comissão Sistema':r.comissaoCorreta,'Diferença Sistema':r.difSistema,'Taxa Analista%':r.taxaAnal,'Comissão Analista':r.comissaoAnal,'Diferença Analista':r.difAnal,'Taxa Match':r.taxaMatch?'✓':'✗','Pendência':r.issues.join(', ')||'OK'}));
+    const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'ComissaoMinima');XLSX.writeFile(wb,`comissao_minima_${TODAY}.xlsx`);
+  };
+
+  const TH=({c})=><th style={{padding:"9px 10px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
+
+  return(<div>
+    {/* Summary cards */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+      {[[rows.length,"Transações (Flag=Sim)",T.accent,"📊"],[summary.length,"Produtos únicos",T.success,"📦"],[totalDiv,"Divergências",T.danger,"⚠️"],[totalDifSistema,"Total Estorno (Sistema)",T.warning,"💰"]].map(([v,l,clr,ic])=>(
+        <Stat key={l} label={l} value={typeof v==="number"&&v>10?fV(v):v} color={clr} icon={ic}/>
+      ))}
+    </div>
+
+    {/* Tabs */}
+    <div style={{display:"flex",gap:2,marginBottom:16,borderBottom:`1px solid ${T.border}`}}>
+      {[["summary","📊 Resumo por Produto"],["detail","📋 Detalhe por Transação"],["diff","⚠️ Divergências"]].map(([id,label])=>(
+        <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",background:"transparent",border:"none",cursor:"pointer",fontSize:12,fontWeight:tab===id?700:400,color:tab===id?T.accent:T.gray,borderBottom:tab===id?`2px solid ${T.accent}`:"2px solid transparent",marginBottom:-1}}>
+          {label}
+        </button>
+      ))}
+      <div style={{flex:1}}/>
+      <button onClick={doExport} style={{padding:"8px 18px",background:T.accent,color:"#0a1628",border:"none",borderRadius:50,fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:4}}>⬇ Exportar</button>
+    </div>
+
+    {/* RESUMO TAB */}
+    {tab==="summary"&&(
+      <div>
+        <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{background:T.surface}}>
+              {["Produto Cielo","Qtd","Total VCB","Comissão Sistema","Estorno Sistema","Comissão Analista","Estorno Analista","Δ Analista vs Sistema","Status"].map(h=><TH key={h} c={h}/>)}
+            </tr></thead>
+            <tbody>
+              {summary.map((s,i)=>{
+                const delta=Math.abs(s.totalDifSistema-s.totalDifAnal);
+                const ok=delta<0.01;
+                return(<tr key={i} style={{background:!ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`}}>
+                  <td style={{padding:"9px 12px",fontWeight:600,color:T.white}}>{s.produto}</td>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{s.qtd}</td>
+                  <td style={{padding:"9px 12px",color:T.white}}>{fV(s.totalVCB)}</td>
+                  <td style={{padding:"9px 12px",color:T.accent}}>{fV(s.totalCSistema)}</td>
+                  <td style={{padding:"9px 12px",fontWeight:700,color:T.warning}}>{fV(s.totalDifSistema)}</td>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{fV(s.totalCAnal)}</td>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{fV(s.totalDifAnal)}</td>
+                  <td style={{padding:"9px 12px",color:ok?T.success:T.danger,fontWeight:700}}>{ok?"✅ OK":`⚠️ ${fV(delta)}`}</td>
+                  <td style={{padding:"9px 12px"}}>{s.divergencias>0?<span style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 8px",borderRadius:12,fontSize:10,fontWeight:700}}>{s.divergencias} diverg.</span>:<span style={{color:T.success,fontSize:11}}>✓ OK</span>}</td>
+                </tr>);
+              })}
+              <tr style={{background:T.surface,borderTop:`2px solid ${T.border}`}}>
+                <td colSpan={2} style={{padding:"10px 12px",fontWeight:700,color:T.white}}>TOTAL GERAL</td>
+                <td style={{padding:"10px 12px",fontWeight:700,color:T.white}}>{fV(summary.reduce((s,r)=>s+r.totalVCB,0))}</td>
+                <td style={{padding:"10px 12px",fontWeight:700,color:T.accent}}>{fV(summary.reduce((s,r)=>s+r.totalCSistema,0))}</td>
+                <td style={{padding:"10px 12px",fontWeight:900,color:T.warning,fontSize:14}}>{fV(totalDifSistema)}</td>
+                <td style={{padding:"10px 12px",fontWeight:700,color:T.gray}}>{fV(summary.reduce((s,r)=>s+r.totalCAnal,0))}</td>
+                <td style={{padding:"10px 12px",fontWeight:700,color:T.gray}}>{fV(totalDifAnal)}</td>
+                <td style={{padding:"10px 12px",fontWeight:700,color:Math.abs(totalDifSistema-totalDifAnal)<0.01?T.success:T.danger}}>{Math.abs(totalDifSistema-totalDifAnal)<0.01?"✅ IGUAL":`⚠️ ${fV(Math.abs(totalDifSistema-totalDifAnal))}`}</td>
+                <td/>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{marginTop:10,padding:"12px 16px",background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12,color:T.gray}}>
+          <strong style={{color:T.white}}>Como interpretar:</strong> "Estorno" = VCB - Comissão Correta. Positivo = cliente foi cobrado a mais (MDR mínimo aplicado incorretamente). É o valor a ser creditado de volta ao cliente via ajuste C005/D005.
+        </div>
+      </div>
+    )}
+
+    {/* DETALHE TAB */}
+    {tab!=="summary"&&(
+      <div>
+        <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar produto, autorização, EC…" style={{flex:1,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
+          <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,cursor:"pointer",color:T.gray}}>
+            <input type="checkbox" checked={onlyDiv} onChange={e=>setOnlyDiv(e.target.checked)} style={{accentColor:T.accent}}/>Apenas divergências
+          </label>
+          <span style={{fontSize:12,color:T.muted}}>{shown.filter(r=>tab==="diff"?!r.ok:true).length}/{rows.length}</span>
+        </div>
+        <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+          <div style={{overflowX:"auto",maxHeight:"50vh",overflowY:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>
+                {["Autorização","Produto","Parcelas","Data","Valor Trans.","VCB","% Sistema","Comiss. Sistema","Est. Sistema","% Analista","Comiss. Analista","Est. Analista","Taxa OK?","Situação"].map(h=><TH key={h} c={h}/>)}
+              </tr></thead>
+              <tbody>
+                {shown.filter(r=>tab==="diff"?!r.ok:true).map((r,i)=>(
+                  <>
+                    <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:!r.ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
+                      <td style={{padding:"8px 10px",fontFamily:"monospace",color:T.accent,fontSize:10}}>{r.auth}</td>
+                      <td style={{padding:"8px 10px",color:T.white,fontSize:10}}>{r.produto}</td>
+                      <td style={{padding:"8px 10px",color:T.gray,textAlign:"center"}}>{r.parcelas||"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.gray}}>{r.dtTrans||"—"}</td>
+                      <td style={{padding:"8px 10px",fontWeight:600,color:T.white}}>{fV(r.vt)}</td>
+                      <td style={{padding:"8px 10px",color:T.white}}>{fV(r.vcb)}</td>
+                      <td style={{padding:"8px 10px",color:T.accent,fontWeight:700}}>{r.taxaCorreta!==null?`${r.taxaCorreta}%`:"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.accent}}>{r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"}</td>
+                      <td style={{padding:"8px 10px",fontWeight:700,color:r.difSistema>0?T.warning:T.success}}>{r.difSistema!==null?fV(r.difSistema):"—"}</td>
+                      <td style={{padding:"8px 10px",color:r.taxaMatch===false?T.danger:T.gray}}>{r.taxaAnal!==null?`${r.taxaAnal}%`:"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.gray}}>{r.comissaoAnal!==null?fV(r.comissaoAnal):"—"}</td>
+                      <td style={{padding:"8px 10px",color:r.difMatch===false?T.danger:T.gray}}>{r.difAnal!==null?fV(r.difAnal):"—"}</td>
+                      <td style={{padding:"8px 10px"}}>{r.taxaMatch===true?<span style={{color:T.success}}>✅</span>:r.taxaMatch===false?<span style={{color:T.danger}}>❌</span>:<span style={{color:T.muted}}>—</span>}</td>
+                      <td style={{padding:"8px 10px"}}>{r.ok?<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>:r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{iss.replace('_',' ')}</span>)}</td>
+                    </tr>
+                    {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={14} style={{padding:"12px 16px"}}>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
+                        {[["EC",r.ec],["Número RO",r.ro||"—"],["Percentual Desconto Cobrado",`${r.pctDesc}%`],["Parcelas",r.parcelas||"À vista"],
+                          ["Taxa Sistema",r.taxaCorreta!==null?`${r.taxaCorreta}%`:"Não encontrada"],["Comissão Sistema",r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"],["Estorno Sistema",r.difSistema!==null?fV(r.difSistema):"—"],
+                          ["Taxa Analista",r.taxaAnal!==null?`${r.taxaAnal}%`:"—"],["Comissão Analista",r.comissaoAnal!==null?fV(r.comissaoAnal):"—"],["Estorno Analista",r.difAnal!==null?fV(r.difAnal):"—"],
+                          ["Taxa correta?",r.taxaMatch===true?"✅ Sim":r.taxaMatch===false?"❌ Não":"—"],["Cálculo correto?",r.difMatch===true?"✅ Sim":r.difMatch===false?"❌ Não":"—"]
+                        ].map(([l,v])=>(
+                          <div key={l} style={{background:T.card,padding:"9px 12px",borderRadius:8,border:`1px solid ${T.border}`}}>
+                            <div style={{fontSize:9,color:T.muted,marginBottom:3,letterSpacing:.5}}>{l.toUpperCase()}</div>
+                            <div style={{fontWeight:600,color:T.white,fontSize:12}}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {!r.taxaMatch&&r.taxaCorreta!==null&&r.taxaAnal!==null&&(
+                        <div style={{marginTop:10,padding:"10px 14px",background:"rgba(255,82,82,.1)",borderRadius:8,border:"1px solid rgba(255,82,82,.3)",fontSize:12}}>
+                          <strong style={{color:"#ff5252"}}>⚠️ Taxa incorreta:</strong>
+                          <span style={{color:T.gray,marginLeft:8}}>Analista usou <strong style={{color:T.white}}>{r.taxaAnal}%</strong> mas a taxa correta é <strong style={{color:T.accent}}>{r.taxaCorreta}%</strong> para <strong style={{color:T.white}}>{r.produto}</strong>{r.parcelas>1?` em ${r.parcelas}x`:''}.</span>
+                          <span style={{color:T.warning,marginLeft:8}}>Diferença no estorno: {fV(Math.abs(r.difSistema-r.difAnal))}</span>
+                        </div>
+                      )}
+                    </td></tr>)}
+                  </>
+                ))}
+              </tbody>
+            </table>
+            {shown.filter(r=>tab==="diff"?!r.ok:true).length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>{tab==="diff"?"Nenhuma divergência encontrada ✅":"Nenhum registro."}</div>}
+          </div>
+        </div>
+      </div>
+    )}
+  </div>);
+};
+
 const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
   const mod=MODULE_BY_ID[moduleId];const slotData=files[moduleId]||{};const moduleResults=results[moduleId]||null;
   const setSlot=(key,data)=>setFiles(f=>({...f,[moduleId]:{...f[moduleId],[key]:data}}));
@@ -553,8 +801,8 @@ const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
       <button onClick={run} disabled={!mod.canRun(slotData)} style={{padding:"0 28px",height:60,border:"none",borderRadius:50,fontSize:13,fontWeight:900,letterSpacing:.5,whiteSpace:"nowrap",background:mod.canRun(slotData)?T.accent:T.muted,color:mod.canRun(slotData)?"#000":T.card,cursor:mod.canRun(slotData)?"pointer":"not-allowed",boxShadow:mod.canRun(slotData)?`0 4px 20px ${T.accent}55`:"none"}}>▶ ANALISAR</button>
     </div>
     {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/>}
-    {moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}
-    {moduleResults&&!mod.is5125&&!mod.is9066&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
+    {moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}{moduleResults&&mod.isComissao&&<ViewComissao results={moduleResults}/>}
+    {moduleResults&&!mod.is5125&&!mod.is9066&&!mod.isComissao&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
     {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):mod.is9066?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue o Controle Sinistro e os Ajustes G.A</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Código 984 · ✔ Número lógico · ✔ Bandeira VISA · ✔ Valor · ✔ SLA D+4 úteis · ✔ Feriados excluídos</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
   </div>);
 };
