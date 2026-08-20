@@ -702,8 +702,8 @@ const ViewComissao=({results})=>{
   return(<div>
     {/* Summary cards */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:20}}>
-      {[[rows.length,"Transações (Flag=Sim)",T.accent,"📊"],[summary.length,"Produtos únicos",T.success,"📦"],[totalDiv,"Divergências",T.danger,"⚠️"],[totalSemTaxaEc,"Sem tarifa do EC (padrão)",T.purple,"❔"],[totalDifSistema,"Total Estorno (Sistema)",T.warning,"💰"]].map(([v,l,clr,ic])=>(
-        <Stat key={l} label={l} value={typeof v==="number"&&v>10?fV(v):v} color={clr} icon={ic}/>
+      {[[rows.length,"Transações (Flag=Sim)",T.accent,"📊",false],[summary.length,"Produtos únicos",T.success,"📦",false],[totalDiv,"Divergências",T.danger,"⚠️",false],[totalSemTaxaEc,"Sem tarifa do EC (padrão)",T.purple,"❔",false],[totalDifSistema,"Total Estorno (Sistema)",T.warning,"💰",true]].map(([v,l,clr,ic,isMoney])=>(
+        <Stat key={l} label={l} value={isMoney?fV(v):v} color={clr} icon={ic}/>
       ))}
     </div>
 
