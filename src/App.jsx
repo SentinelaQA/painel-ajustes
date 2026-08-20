@@ -46,7 +46,9 @@ const pV=s=>{
 };
 const fV=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 
-const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];cb(XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}));};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
+// Em planilhas com múltiplas abas (ex: "Resumo" + "Faturamento"), pega a aba com mais linhas —
+// a aba de detalhe transacional é sempre a maior; um resumo/pivot tem poucas linhas.
+const loadFile=(file,enc,cb)=>{const ext=file.name.split(".").pop().toLowerCase();if(["xlsx","xlsb","xls"].includes(ext)){const fr=new FileReader();fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});let best=[];wb.SheetNames.forEach(name=>{const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{defval:"",raw:true});if(rows.length>best.length)best=rows;});cb(best);};fr.readAsArrayBuffer(file);}else{const fr=new FileReader();fr.onload=e=>cb(Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data);fr.readAsText(file,enc);}};
 
 function analyze5125(gaRows,ctrlRows){
   const canByProt={},bckByRef={},dupTrack={};
@@ -280,21 +282,19 @@ function getTaxaCorreta(produto,parcelas,ec,taxaMap){
   return{taxa:null,origem:null};
 }
 
+// Reconstrói o grid original (título + linha em branco + cabeçalho real + dados) a partir do
+// JSON que o SheetJS já gerou usando a linha 1 como header, e re-ancora no cabeçalho de verdade
+// onde quer que ele esteja (linha 1, 2, 3...). Robusto tanto pra arquivos "limpos" (header já na
+// linha 1) quanto pra exports do SIE que têm título + linha em branco antes do cabeçalho real.
 function parseSIEFile(rawRows){
   if(!rawRows||!rawRows.length) return [];
-  const vals0=Object.values(rawRows[0]||{});
-  const first=String(vals0[0]||'');
-  if(first.includes('Faturamento')||first.includes('Cont')){
-    const hRow=rawRows.find(r=>Object.values(r).some(v=>String(v||'').includes('Produto')||String(v||'').includes('Flag MDR')));
-    if(!hRow) return rawRows;
-    const hIdx=rawRows.indexOf(hRow);
-    const hVals=Object.values(hRow);
-    return rawRows.slice(hIdx+1).map(row=>{
-      const rv=Object.values(row);
-      return Object.fromEntries(hVals.map((h,i)=>[h||`_c${i}`,rv[i]]));
-    }).filter(r=>Object.values(r).some(v=>v!==''&&v!=null));
-  }
-  return rawRows;
+  const keyRow=Object.keys(rawRows[0]);
+  const grid=[keyRow,...rawRows.map(r=>Object.values(r))];
+  const hIdx=grid.findIndex(row=>row.some(v=>String(v||'').includes('Produto')||String(v||'').includes('Flag MDR')));
+  if(hIdx===-1) return rawRows;
+  const hVals=grid[hIdx];
+  return grid.slice(hIdx+1).map(row=>Object.fromEntries(hVals.map((h,i)=>[h||`_c${i}`,row[i]])))
+    .filter(r=>Object.values(r).some(v=>v!==''&&v!=null));
 }
 
 function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
