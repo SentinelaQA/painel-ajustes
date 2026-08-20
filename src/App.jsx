@@ -244,8 +244,11 @@ function detectBandeira(produto){
 // Token de parcela usado como sufixo da chave: 'D' = débito, '0' = à vista, ou o nº de parcelas (2..12)
 const parcTokenNum=(parc,isDebito)=>isDebito?'D':parc>1?String(parc):'0';
 const parcTokenRaw=(raw,isDebito)=>{
-  if(isDebito) return 'D';
   const s=String(raw||'').toUpperCase();
+  // "Débito" pode vir só na coluna Produto/Tipo de Venda (isDebito) OU só na própria célula de
+  // Parcelas ("Débito") — checa as duas, senão a tarifa de débito da planilha de taxas cai no
+  // mesmo balde de "à vista" e é sobrescrita.
+  if(isDebito||s.includes('DEBITO')||s.includes('DÉBITO')) return 'D';
   if(s.includes('VISTA')) return '0';
   const n=parseInt(s.replace(/\D+/g,''))||0;
   return n>1?String(n):'0';
@@ -261,7 +264,11 @@ function buildTaxaMap(taxasRaw){
     const tipoVenda=String(getCol(r,'Tipo da Venda','Tipo de Venda','Tipo Venda')||'').trim();
     const parcRaw=getCol(r,'Parcelas','Quantidade de Parcelas','Qtd Parcelas','Nº Parcelas','Parcela');
     const taxaRaw=String(getCol(r,'Taxa %','Taxa%','Taxa','Taxa Atual','Taxa atual')||'').replace('%','').trim();
-    const taxa=pV(taxaRaw);
+    let taxa=pV(taxaRaw);
+    // Quando a coluna vem formatada como % no Excel, o valor "cru" da célula é a fração (0,0085
+    // pra 0,85%), não 0,85 — normaliza pra escala percentual (0.85, 4.86...) igual o resto do app
+    // usa. Taxas reais da Cielo vão de ~0,8% a ~15%, então threshold 0.5 separa bem os dois casos.
+    if(taxa>0&&taxa<0.5) taxa=taxa*100;
     if(!taxa) return;
     const{bandeira,isDebito}=detectBandeira(`${produto} ${tipoVenda}`);
     const tk=parcTokenRaw(parcRaw,isDebito);
@@ -329,11 +336,13 @@ function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
     const difMatch=difSistema!==null&&difAnal!==null?Math.abs(difSistema-difAnal)<0.005:null;
     const issues=[];
     if(taxaCorreta===null) issues.push('TAXA_NAO_ENCONTRADA');
-    if(taxaOrigem==='PADRAO') issues.push('SEM_TAXA_EC');
+    // "Sem tarifa do EC" é só informativo (mostrado no badge Origem + no card do topo) — não conta
+    // como divergência sozinho, porque a tabela padrão pode dar o valor certo mesmo sem tarifa
+    // específica do EC cadastrada. Só vira problema de verdade se o cálculo não bater com o analista.
     if(!anal) issues.push('SEM_ANALISTA');
     else if(taxaMatch===false) issues.push('TAXA_DIVERGE');
     else if(difMatch===false) issues.push('CALCULO_DIVERGE');
-    return{ec,auth,ro,produto,parcelas,dtTrans,vt,vcb,pctDesc,taxaCorreta,taxaOrigem,comissaoCorreta,difSistema,taxaAnal,comissaoAnal,difAnal,taxaMatch,difMatch,hasAnal:!!anal,issues,ok:issues.length===0&&taxaOrigem!=='PADRAO'};
+    return{ec,auth,ro,produto,parcelas,dtTrans,vt,vcb,pctDesc,taxaCorreta,taxaOrigem,comissaoCorreta,difSistema,taxaAnal,comissaoAnal,difAnal,taxaMatch,difMatch,hasAnal:!!anal,issues,ok:issues.length===0};
   });
   const byProd={};
   rows.forEach(r=>{
