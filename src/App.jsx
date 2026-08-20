@@ -356,7 +356,24 @@ function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
     if(r.difAnal!==null) byProd[k].totalDifAnal+=r.difAnal;
     if(!r.ok) byProd[k].divergencias++;
   });
-  return{rows,summary:Object.values(byProd)};
+  // Reconciliação com a planilha do analista: linhas que existem lá mas não têm par no SIE
+  // filtrado (Flag=Sim) — é isso que explica o total do sistema não bater com o total do
+  // analista mesmo quando toda linha comparada está OK.
+  const matchedAuths=new Set(rows.map(r=>r.auth));
+  const analTotalGeral=Math.round(analRaw.reduce((s,r)=>s+pV(String(r['Diferença']||r['Diferenca']||0)),0)*10000)/10000;
+  const analOnly=analRaw.map(r=>{
+    const auth=String(r['Autorização']||r['Autorizacao']||'').trim();
+    return{auth,r};
+  }).filter(({auth})=>auth&&!matchedAuths.has(auth)).map(({auth,r})=>({
+    auth,
+    ec:String(r['EC']||r['Número do EC']||'').trim(),
+    produto:String(r['Produto cielo']||r['Produto Cielo']||'').trim(),
+    dtTrans:r['Data da Transação']||r['Data']||'',
+    flag:String(r['Flag MDR Mínimo']||'').trim(),
+    difAnal:pV(String(r['Diferença']||r['Diferenca']||0)),
+  }));
+
+  return{rows,summary:Object.values(byProd),analOnly,analTotalGeral};
 }
 
 
@@ -686,13 +703,17 @@ const View9066=({results})=>{
 };
 
 const ViewComissao=({results})=>{
-  const{rows,summary}=results;
+  const{rows,summary,analOnly=[],analTotalGeral=null}=results;
   const[search,setSearch]=useState("");const[tab,setTab]=useState("summary");const[expanded,setExpanded]=useState(null);
   const[onlyDiv,setOnlyDiv]=useState(false);
   const totalDifSistema=summary.reduce((s,r)=>s+r.totalDifSistema,0);
   const totalDifAnal=summary.reduce((s,r)=>s+r.totalDifAnal,0);
   const totalDiv=rows.filter(r=>!r.ok).length;
   const totalSemTaxaEc=rows.filter(r=>r.taxaOrigem==='PADRAO').length;
+  // Gap entre o total do sistema (só as transações que casaram com o SIE filtrado) e o total real
+  // da planilha do analista (arquivo inteiro) — normalmente vem de linhas que estão no analista
+  // mas não apareceram no SIE que você subiu (período diferente, EC diferente, etc).
+  const gapAnalista=analTotalGeral!==null?Math.round((analTotalGeral-totalDifSistema)*10000)/10000:null;
 
   const shown=useMemo(()=>{
     let r=rows;
@@ -716,9 +737,18 @@ const ViewComissao=({results})=>{
       ))}
     </div>
 
+    {/* Reconciliação com o total real do analista */}
+    {analTotalGeral!==null&&Math.abs(gapAnalista)>=0.01&&(
+      <div style={{marginBottom:16,padding:"12px 16px",background:"rgba(179,136,255,.08)",border:`1px solid ${T.purple}`,borderRadius:10,fontSize:12}}>
+        <strong style={{color:T.purple}}>⚠ Total do sistema ({fV(totalDifSistema)}) ≠ total da planilha do analista ({fV(analTotalGeral)})</strong>
+        <span style={{color:T.gray,marginLeft:8}}>Diferença de {fV(Math.abs(gapAnalista))}. </span>
+        <span style={{color:T.gray}}>{analOnly.length>0?`${analOnly.length} transação(ões) da planilha do analista não têm par no SIE que você subiu — veja a aba "Só no Analista".`:"Confira se o período/EC dos dois arquivos é o mesmo."}</span>
+      </div>
+    )}
+
     {/* Tabs */}
     <div style={{display:"flex",gap:2,marginBottom:16,borderBottom:`1px solid ${T.border}`}}>
-      {[["summary","📊 Resumo por Produto"],["detail","📋 Detalhe por Transação"],["diff","⚠️ Divergências"]].map(([id,label])=>(
+      {[["summary","📊 Resumo por Produto"],["detail","📋 Detalhe por Transação"],["diff","⚠️ Divergências"],...(analOnly.length>0?[["analonly",`🔎 Só no Analista (${analOnly.length})`]]:[])].map(([id,label])=>(
         <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",background:"transparent",border:"none",cursor:"pointer",fontSize:12,fontWeight:tab===id?700:400,color:tab===id?T.accent:T.gray,borderBottom:tab===id?`2px solid ${T.accent}`:"2px solid transparent",marginBottom:-1}}>
           {label}
         </button>
@@ -772,7 +802,39 @@ const ViewComissao=({results})=>{
     )}
 
     {/* DETALHE TAB */}
-    {tab!=="summary"&&(
+    {/* SÓ NO ANALISTA TAB — transações da planilha do analista sem par no SIE filtrado */}
+    {tab==="analonly"&&(
+      <div>
+        <div style={{marginBottom:10,padding:"10px 14px",background:T.card,borderRadius:8,border:`1px solid ${T.border}`,fontSize:12,color:T.gray}}>
+          Essas autorizações aparecem na planilha do analista mas não foram encontradas entre as transações com Flag MDR Mínimo = Sim do SIE que você subiu agora. Confira se são de outro período/extração — não são divergência de cálculo, é ausência de dado pra comparar.
+        </div>
+        <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{background:T.surface}}>
+              {["EC","Autorização","Produto","Data","Flag MDR Mínimo","Diferença (Analista)"].map(h=><TH key={h} c={h}/>)}
+            </tr></thead>
+            <tbody>
+              {analOnly.map((r,i)=>(
+                <tr key={r.auth+i} style={{background:i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`}}>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{r.ec||"—"}</td>
+                  <td style={{padding:"9px 12px",fontFamily:"monospace",color:T.accent}}>{r.auth}</td>
+                  <td style={{padding:"9px 12px",color:T.white}}>{r.produto||"—"}</td>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{String(r.dtTrans||"—")}</td>
+                  <td style={{padding:"9px 12px",color:T.gray}}>{r.flag||"—"}</td>
+                  <td style={{padding:"9px 12px",fontWeight:700,color:T.purple}}>{fV(r.difAnal)}</td>
+                </tr>
+              ))}
+              <tr style={{background:T.surface,borderTop:`2px solid ${T.border}`}}>
+                <td colSpan={5} style={{padding:"10px 12px",fontWeight:700,color:T.white}}>TOTAL SÓ NO ANALISTA</td>
+                <td style={{padding:"10px 12px",fontWeight:900,color:T.purple}}>{fV(analOnly.reduce((s,r)=>s+r.difAnal,0))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
+
+    {(tab==="detail"||tab==="diff")&&(
       <div>
         <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12}}>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar produto, autorização, EC…" style={{flex:1,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
