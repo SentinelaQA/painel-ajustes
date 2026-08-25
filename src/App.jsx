@@ -523,16 +523,24 @@ function analyze7922(ajustesData,controleData){
     const valor=pV(String(getCol(r,"Valor total do ajuste")||0));
     const ro=String(getCol(r,"Número RO","Numero RO")||"").trim();
     const obs=String(getCol(r,"Observações","Observacoes")||"").trim();
+    // A Observação começa com um número de referência do estorno (ex "00889227 - Estorno
+    // Cobranca de Ativo - OUTUBRO DE 2022", às vezes separado por "|" em vez de "-") — não é o
+    // número lógico da máquina, é o identificador que diferencia dois ajustes que por coincidência
+    // têm o mesmo RO + Valor + EC (mesmo cliente, mesmo valor padrão, meses diferentes de cobrança).
+    const obsRef=(obs.match(/^(\d+)/)||[])[1]||"";
     const dtCriacao=parseAny(getCol(r,"Data de criação","Data de criacao"));
     const solicitacao=String(getCol(r,"Solicitação","Solicitacao")||"").trim();
     const tipoAjuste=String(getCol(r,"Tipo de ajuste")||"").trim();
-    return{solicitacao,ec,codigoMotivo,is297,bandeira,isVisa,valor,ro,obs,dtCriacao,tipoAjuste};
+    return{solicitacao,ec,codigoMotivo,is297,bandeira,isVisa,valor,ro,obs,obsRef,dtCriacao,tipoAjuste};
   }).filter(a=>a.is297);
 
-  // Duplicidade: mesma combinação de Número RO (X) + Valor (Q) + EC (E) aparecendo mais de uma vez
+  // Duplicidade: mesma combinação de Número RO (X) + Valor (Q) + EC (E) *e* mesma referência da
+  // Observação (M) aparecendo mais de uma vez. RO+Valor+EC sozinhos dão falso positivo quando o
+  // mesmo cliente tem duas cobranças D297 de meses diferentes com o mesmo RO/valor — só é
+  // duplicidade de verdade quando a referência da Observação também é igual.
   const dupKeyCount={};
-  ajustes.forEach(a=>{const k=`${a.ro}|${a.valor}|${a.ec}`;dupKeyCount[k]=(dupKeyCount[k]||0)+1;});
-  ajustes.forEach(a=>{a.isDup=dupKeyCount[`${a.ro}|${a.valor}|${a.ec}`]>1;});
+  ajustes.forEach(a=>{const k=`${a.ro}|${a.valor}|${a.ec}|${a.obsRef}`;dupKeyCount[k]=(dupKeyCount[k]||0)+1;});
+  ajustes.forEach(a=>{a.isDup=dupKeyCount[`${a.ro}|${a.valor}|${a.ec}|${a.obsRef}`]>1;});
 
   const ajustesByEc={};
   ajustes.forEach(a=>{(ajustesByEc[a.ec]=ajustesByEc[a.ec]||[]).push(a);});
