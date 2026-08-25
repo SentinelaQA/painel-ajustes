@@ -240,13 +240,20 @@ function detectBandeira(produto){
   else if(p.includes('CABAL')) b='CABAL';
   else if(p.includes('VISA')) b='VISA';
   const isDebito=p.includes('DEBITO')||p.includes('DÉBITO')||p.includes('MAESTRO');
-  return{bandeira:b,isDebito};
+  // Voucher/Multibenefícios (VA/VR) roda na bandeira do cartão mas com tarifa própria, diferente
+  // da tarifa de crédito à vista da mesma bandeira — precisa de token de parcela dedicado (ver
+  // parcTokenNum/parcTokenRaw), senão as duas taxas colidem na mesma chave EC|bandeira|0.
+  const isVoucher=p.includes('VOUCHER')||p.includes('MULTIBENEFICIO');
+  return{bandeira:b,isDebito,isVoucher};
 }
 
-// Token de parcela usado como sufixo da chave: 'D' = débito, '0' = à vista, ou o nº de parcelas (2..12)
-const parcTokenNum=(parc,isDebito)=>isDebito?'D':parc>1?String(parc):'0';
-const parcTokenRaw=(raw,isDebito)=>{
+// Token de parcela usado como sufixo da chave: 'V' = voucher/multibenefícios, 'D' = débito,
+// '0' = à vista, ou o nº de parcelas (2..12). Voucher checado antes de débito/parcelas porque é
+// informação mais específica (ex "Visa Voucher Multibenefícios" não é nem débito nem parcelado).
+const parcTokenNum=(parc,isDebito,isVoucher)=>isVoucher?'V':isDebito?'D':parc>1?String(parc):'0';
+const parcTokenRaw=(raw,isDebito,isVoucher)=>{
   const s=String(raw||'').toUpperCase();
+  if(isVoucher||s.includes('VOUCHER')||s.includes('MULTIBENEFICIO')) return 'V';
   // "Débito" pode vir só na coluna Produto/Tipo de Venda (isDebito) OU só na própria célula de
   // Parcelas ("Débito") — checa as duas, senão a tarifa de débito da planilha de taxas cai no
   // mesmo balde de "à vista" e é sobrescrita.
@@ -272,8 +279,8 @@ function buildTaxaMap(taxasRaw){
     // usa. Taxas reais da Cielo vão de ~0,8% a ~15%, então threshold 0.5 separa bem os dois casos.
     if(taxa>0&&taxa<0.5) taxa=Math.round(taxa*100*10000)/10000;
     if(!taxa) return;
-    const{bandeira,isDebito}=detectBandeira(`${produto} ${tipoVenda}`);
-    const tk=parcTokenRaw(parcRaw,isDebito);
+    const{bandeira,isDebito,isVoucher}=detectBandeira(`${produto} ${tipoVenda}`);
+    const tk=parcTokenRaw(parcRaw,isDebito,isVoucher);
     map[`${ec}|${bandeira}|${tk}`]=taxa;
   });
   return map;
@@ -281,9 +288,9 @@ function buildTaxaMap(taxasRaw){
 
 // Resolve a taxa correta: 1º tenta a tarifa específica do EC (3ª planilha), senão cai na tabela padrão Cielo
 function getTaxaCorreta(produto,parcelas,ec,taxaMap){
-  const{bandeira,isDebito}=detectBandeira(produto);
+  const{bandeira,isDebito,isVoucher}=detectBandeira(produto);
   const parc=parseInt(parcelas)||0;
-  const tk=parcTokenNum(parc,isDebito);
+  const tk=parcTokenNum(parc,isDebito,isVoucher);
   const ecKey=ec?`${String(ec).trim()}|${bandeira}|${tk}`:null;
   if(ecKey&&taxaMap&&taxaMap[ecKey]!==undefined) return{taxa:taxaMap[ecKey],origem:'EC'};
   const padrao=TAXA_TABLE[`${bandeira}|${tk}`];
@@ -495,16 +502,39 @@ const findRowsAcross=(dataList,requiredHeaders,preferName)=>{
   return[];
 };
 
+// Distância de edição (Levenshtein) — usada só pra tolerar erro de digitação de 1-2 letras numa
+// palavra-chave (ex "conta" em vez de "consta"), não pra parear frases inteiras.
+function levenshtein(a,b){
+  const m=a.length,n=b.length;
+  if(!m) return n; if(!n) return m;
+  let prev=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){
+    const cur=[i];
+    for(let j=1;j<=n;j++) cur[j]=a[i-1]===b[j-1]?prev[j-1]:1+Math.min(prev[j-1],prev[j],cur[j-1]);
+    prev=cur;
+  }
+  return prev[n];
+}
+// true se ALGUMA palavra do texto está a 1-2 letras de "target" (erro de digitação pequeno tipo
+// letra faltando/trocada/a mais) — palavras de até 5 letras toleram 1 erro, mais longas toleram 2.
+const fuzzyHasWord=(s,target)=>{
+  const maxDist=target.length<=5?1:2;
+  return s.split(/\s+/).some(w=>w.length>=3&&Math.abs(w.length-target.length)<=maxDist&&levenshtein(w,target)<=maxDist);
+};
+
 // Agrupa "Motivo se Improcedente" (coluna W do controle) nos 4 baldes pedidos, tolerando
-// variações reais de digitação da planilha (maiúsculas, "D97" em vez de "D297", etc.) — o que
-// não bate com nenhum dos 4 vira "Outros".
+// variações reais de digitação da planilha: maiúsculas, "D97" em vez de "D297", e erro de
+// digitação pequeno numa palavra-chave (ex "conta" em vez de "consta") — só cai em "Outros"
+// quando o texto é bem diferente dos 4 motivos esperados, não por causa de 1 letra errada.
 function normMotivoImprocedente(m){
   const s=normStr(m);
   if(!s) return"Outros";
-  if(s.includes("acionamento")) return"Acionamento indevido";
-  if(s.includes("duplicidade")) return"Evento aberto em duplicidade";
-  if(s.includes("consta estorno")) return"Já consta estorno";
-  if(s.includes("consta")&&(s.includes("d297")||s.includes("d97")||s.includes("cobranca")||s.includes("debito"))) return"Não consta cobrança D297";
+  if(s.includes("acionamento")||fuzzyHasWord(s,"acionamento")) return"Acionamento indevido";
+  if(s.includes("duplicidade")||fuzzyHasWord(s,"duplicidade")) return"Evento aberto em duplicidade";
+  if(s.includes("consta estorno")||(fuzzyHasWord(s,"consta")&&fuzzyHasWord(s,"estorno"))) return"Já consta estorno";
+  const temConsta=s.includes("consta")||fuzzyHasWord(s,"consta");
+  const temRef=s.includes("d297")||s.includes("d97")||s.includes("cobranca")||s.includes("debito")||fuzzyHasWord(s,"cobranca")||fuzzyHasWord(s,"debito");
+  if(temConsta&&temRef) return"Não consta cobrança D297";
   return"Outros";
 }
 
