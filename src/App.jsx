@@ -45,6 +45,8 @@ const pV=s=>{
   return parseFloat(s)||0;
 };
 const fV=v=>v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+// Formata taxa % pra exibição, arredondando erro de ponto flutuante (0.8500000000000001 -> 0.85)
+const fP=v=>v==null?"—":`${(Math.round(v*100)/100).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}%`;
 
 // Em planilhas com múltiplas abas (ex: "Resumo" + "Faturamento"), pega a aba com mais linhas —
 // a aba de detalhe transacional é sempre a maior; um resumo/pivot tem poucas linhas.
@@ -268,7 +270,7 @@ function buildTaxaMap(taxasRaw){
     // Quando a coluna vem formatada como % no Excel, o valor "cru" da célula é a fração (0,0085
     // pra 0,85%), não 0,85 — normaliza pra escala percentual (0.85, 4.86...) igual o resto do app
     // usa. Taxas reais da Cielo vão de ~0,8% a ~15%, então threshold 0.5 separa bem os dois casos.
-    if(taxa>0&&taxa<0.5) taxa=taxa*100;
+    if(taxa>0&&taxa<0.5) taxa=Math.round(taxa*100*10000)/10000;
     if(!taxa) return;
     const{bandeira,isDebito}=detectBandeira(`${produto} ${tipoVenda}`);
     const tk=parcTokenRaw(parcRaw,isDebito);
@@ -376,10 +378,227 @@ function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
   return{rows,summary:Object.values(byProd),analOnly,analTotalGeral};
 }
 
+// ===== Evento 7922 — Ressarcimento/Estorno de Cobrança de Ativos (Terminais não recuperados, D297) =====
+
+// Conta dias úteis (desconsiderando sáb/dom/feriados) estritamente entre duas datas ISO
+// "YYYY-MM-DD". Positivo quando b é depois de a, negativo quando b é antes de a. 0 = mesmo dia.
+const diffBiz=(a,b)=>{
+  if(!a||!b) return null;
+  try{
+    let da=new Date(a+"T12:00:00Z"),db=new Date(b+"T12:00:00Z");
+    if(isNaN(da.getTime())||isNaN(db.getTime())) return null;
+    let sign=1;
+    if(da>db){const t=da;da=db;db=t;sign=-1;}
+    const cur=new Date(da);let c=0;
+    while(cur<db){
+      cur.setUTCDate(cur.getUTCDate()+1);
+      const k=cur.toISOString().slice(0,10),w=cur.getUTCDay();
+      if(w!==0&&w!==6&&!BR_HOL.has(k)) c++;
+    }
+    return c*sign;
+  }catch(e){return null;}
+};
+
+// Carrega o workbook inteiro (não converte nenhuma aba ainda) — usado no Evento 7922, onde a aba
+// certa varia de nome mês a mês (ex: "7922 Agosto", "Planilha9") e precisa ser achada pelo
+// cabeçalho, não pela posição/tamanho. CSV não tem conceito de aba, então vira uma "tabela única".
+const loadWorkbookRaw=(file,enc,cb)=>{
+  const ext=file.name.split(".").pop().toLowerCase();
+  if(["xlsx","xlsb","xls"].includes(ext)){
+    const fr=new FileReader();
+    fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});cb({type:"wb",wb});};
+    fr.readAsArrayBuffer(file);
+  }else{
+    const fr=new FileReader();
+    fr.onload=e=>cb({type:"rows",rows:Papa.parse(e.target.result,{header:true,delimiter:";",skipEmptyLines:true}).data});
+    fr.readAsText(file,enc);
+  }
+};
+
+// Exports de sistema legado costumam vir com o "!ref" da aba inflado até a última linha do Excel
+// (1.048.576) mesmo tendo só algumas centenas de linhas reais — converter isso com sheet_to_json
+// direto processaria mais de 1 milhão de linhas à toa (dezenas de segundos a minutos, travando o
+// navegador). sheetLastRow acha a última linha realmente preenchida escaneando só as chaves do
+// objeto esparso da planilha (rápido, independe do "!ref"), e sheetToJsonFast restringe a
+// conversão a esse intervalo real antes de chamar o parser.
+const sheetLastRow=ws=>{
+  let maxR=-1;
+  Object.keys(ws||{}).forEach(addr=>{
+    if(addr[0]==="!") return;
+    const v=ws[addr]?.v;
+    if(v===undefined||v==="") return;
+    const c=XLSX.utils.decode_cell(addr);
+    if(c.r>maxR) maxR=c.r;
+  });
+  return maxR;
+};
+const sheetHeaderRow=ws=>{
+  if(!ws||!ws["!ref"]) return[];
+  const range=XLSX.utils.decode_range(ws["!ref"]);
+  const headers=[];
+  for(let C=range.s.c;C<=range.e.c;C++){
+    const cell=ws[XLSX.utils.encode_cell({r:range.s.r,c:C})];
+    headers.push(cell?.v!==undefined?String(cell.v).trim():"");
+  }
+  return headers;
+};
+const sheetToJsonFast=ws=>{
+  if(!ws||!ws["!ref"]) return[];
+  const range=XLSX.utils.decode_range(ws["!ref"]);
+  const lastRow=sheetLastRow(ws);
+  if(lastRow<0) return[];
+  const restricted={...range,e:{...range.e,r:lastRow}};
+  return XLSX.utils.sheet_to_json(ws,{defval:"",raw:true,range:restricted});
+};
+
+const headerMatches=(keys,requiredHeaders)=>requiredHeaders.every(h=>{
+  const nh=normStr(h);
+  return keys.some(k=>k===nh||(nh.length>=6&&k.includes(nh)));
+});
+
+// Acha, num workbook, a MELHOR aba cujo cabeçalho contenha as colunas pedidas — só lê o cabeçalho
+// (barato) de cada aba antes de decidir, e só converte de verdade a aba escolhida. Quando mais de
+// uma aba bate (planilhas de controle costumam ter uma aba "mestre"/histórico com o mesmo layout
+// da aba do mês/evento específico), prioriza pelo NOME (preferName, ex "7922") e, sem nenhuma
+// batendo por nome, pela de menos linhas reais — a mestre/histórico é sempre a maior das duas.
+const findBestSheet=(wb,requiredHeaders,preferName)=>{
+  const cands=[];
+  (wb?.SheetNames||[]).forEach(name=>{
+    const ws=wb.Sheets[name];
+    if(!ws||!ws["!ref"]) return;
+    const keys=sheetHeaderRow(ws).map(normStr);
+    if(headerMatches(keys,requiredHeaders)) cands.push({name,ws});
+  });
+  if(!cands.length) return null;
+  if(preferName){
+    const byName=cands.find(c=>normStr(c.name).includes(normStr(preferName)));
+    if(byName) return sheetToJsonFast(byName.ws);
+  }
+  let best=null,bestRows=Infinity;
+  cands.forEach(c=>{const r=sheetLastRow(c.ws);if(r>=0&&r<bestRows){bestRows=r;best=c;}});
+  return sheetToJsonFast((best||cands[0]).ws);
+};
+
+// Procura as linhas certas em qualquer um dos arquivos carregados (workbook ou CSV já em linhas) —
+// assim não importa em qual dos dois slots o usuário soltou qual arquivo.
+const findRowsAcross=(dataList,requiredHeaders,preferName)=>{
+  for(const data of dataList){
+    if(!data) continue;
+    if(data.type==="rows"){
+      const keys=Object.keys(data.rows?.[0]||{}).map(normStr);
+      if(headerMatches(keys,requiredHeaders)) return data.rows;
+    }else if(data.type==="wb"){
+      const rows=findBestSheet(data.wb,requiredHeaders,preferName);
+      if(rows) return rows;
+    }
+  }
+  return[];
+};
+
+// Agrupa "Motivo se Improcedente" (coluna W do controle) nos 4 baldes pedidos, tolerando
+// variações reais de digitação da planilha (maiúsculas, "D97" em vez de "D297", etc.) — o que
+// não bate com nenhum dos 4 vira "Outros".
+function normMotivoImprocedente(m){
+  const s=normStr(m);
+  if(!s) return"Outros";
+  if(s.includes("acionamento")) return"Acionamento indevido";
+  if(s.includes("duplicidade")) return"Evento aberto em duplicidade";
+  if(s.includes("consta estorno")) return"Já consta estorno";
+  if(s.includes("consta")&&(s.includes("d297")||s.includes("d97")||s.includes("cobranca")||s.includes("debito"))) return"Não consta cobrança D297";
+  return"Outros";
+}
+
+function analyze7922(ajustesData,controleData){
+  const sources=[ajustesData,controleData];
+  const ajusteRows=findRowsAcross(sources,["EC","Código + Motivo de ajuste","Número RO"]);
+  const controleRows=findRowsAcross(sources,["Protocolo","Procedente/ Improcedente","Estabelecimento"],"7922");
+
+  // --- Planilha de Ajustes (crédito D297) ---
+  const ajustes=ajusteRows.map(r=>{
+    const ec=String(getCol(r,"EC")||"").trim();
+    const codigoMotivo=String(getCol(r,"Código + Motivo de ajuste","Codigo + Motivo de ajuste")||"").trim();
+    const is297=/297/.test(codigoMotivo);
+    const bandeira=String(getCol(r,"Bandeira")||"").trim();
+    const isVisa=/VISA/i.test(bandeira);
+    const valor=pV(String(getCol(r,"Valor total do ajuste")||0));
+    const ro=String(getCol(r,"Número RO","Numero RO")||"").trim();
+    const obs=String(getCol(r,"Observações","Observacoes")||"").trim();
+    const dtCriacao=parseAny(getCol(r,"Data de criação","Data de criacao"));
+    const solicitacao=String(getCol(r,"Solicitação","Solicitacao")||"").trim();
+    const tipoAjuste=String(getCol(r,"Tipo de ajuste")||"").trim();
+    return{solicitacao,ec,codigoMotivo,is297,bandeira,isVisa,valor,ro,obs,dtCriacao,tipoAjuste};
+  }).filter(a=>a.is297);
+
+  // Duplicidade: mesma combinação de Número RO (X) + Valor (Q) + EC (E) aparecendo mais de uma vez
+  const dupKeyCount={};
+  ajustes.forEach(a=>{const k=`${a.ro}|${a.valor}|${a.ec}`;dupKeyCount[k]=(dupKeyCount[k]||0)+1;});
+  ajustes.forEach(a=>{a.isDup=dupKeyCount[`${a.ro}|${a.valor}|${a.ec}`]>1;});
+
+  const ajustesByEc={};
+  ajustes.forEach(a=>{(ajustesByEc[a.ec]=ajustesByEc[a.ec]||[]).push(a);});
+
+  // --- Planilha de Controle dos Analistas (Tabulador Consultoria Financeira) ---
+  const controle=controleRows.map(r=>{
+    const protocolo=String(getCol(r,"Protocolo")||"").trim();
+    const ec=String(getCol(r,"Estabelecimento")||"").trim();
+    const analista=String(getCol(r,"Analista")||"").trim();
+    const procImprocRaw=String(getCol(r,"Procedente/ Improcedente","Procedente/Improcedente")||"").trim();
+    const procedente=/^procedente$/i.test(procImprocRaw);
+    const improcedente=/improcedente/i.test(procImprocRaw);
+    const motivoW=String(getCol(r,"Motivo se Improcedente")||"").trim();
+    const obsX=String(getCol(r,"Observação","Observacao")||"").trim();
+    const dtFinalizada=parseAny(getCol(r,"Data Finalizada"));
+    return{protocolo,ec,analista,procImprocRaw,procedente,improcedente,motivoW,obsX,dtFinalizada};
+  }).filter(c=>c.procedente||c.improcedente);
+
+  // --- PROCEDENTE: casa por EC com o ajuste D297 (o mais próximo, em data de criação, da Data
+  // Finalizada) e valida bandeira VISA, D+2 dias úteis (Data Finalizada -> Data de criação do
+  // ajuste, desconsiderando feriados) e duplicidade ---
+  const procedentes=controle.filter(c=>c.procedente).map(c=>{
+    const cands=ajustesByEc[c.ec]||[];
+    let match=null;
+    if(cands.length===1) match=cands[0];
+    else if(cands.length>1){
+      match=c.dtFinalizada
+        ?cands.reduce((best,cur)=>{
+          if(!cur.dtCriacao) return best;
+          if(!best) return cur;
+          return Math.abs(new Date(cur.dtCriacao)-new Date(c.dtFinalizada))<Math.abs(new Date(best.dtCriacao)-new Date(c.dtFinalizada))?cur:best;
+        },null)
+        :cands[0];
+    }
+    const bd=match&&c.dtFinalizada&&match.dtCriacao?diffBiz(c.dtFinalizada,match.dtCriacao):null;
+    const d2Ok=bd===null?null:(bd>=0&&bd<=2);
+    const bandeiraOk=match?match.isVisa:null;
+    const issues=[];
+    if(!match) issues.push("SEM_AJUSTE_D297");
+    else{
+      if(bandeiraOk===false) issues.push("BANDEIRA_ERRADA");
+      if(d2Ok===false) issues.push("FORA_D2");
+      if(match.isDup) issues.push("DUPLICIDADE");
+    }
+    return{...c,match,outrosAjustes:cands.length>1?cands:[],bd,d2Ok,bandeiraOk,issues,ok:issues.length===0};
+  });
+
+  // --- IMPROCEDENTE: agrupa pela coluna W (Motivo se Improcedente) nos 4 baldes + Outros,
+  // trazendo a observação da coluna X pra cada um ---
+  const MOTIVOS=["Acionamento indevido","Evento aberto em duplicidade","Já consta estorno","Não consta cobrança D297","Outros"];
+  const improcedentes=controle.filter(c=>c.improcedente).map(c=>({...c,motivoNorm:normMotivoImprocedente(c.motivoW)}));
+  const porMotivo=MOTIVOS.map(m=>({motivo:m,itens:improcedentes.filter(i=>i.motivoNorm===m)}));
+
+  return{procedentes,improcedentes,porMotivo,ajustes,ajustesDup:ajustes.filter(a=>a.isDup)};
+}
 
 const MODULES=[
   {id:"5125",name:"Evento 5125",group:"Eventos",icon:"⚡",desc:"Cancelamento sem saldo · Boleto / PIX",slots:[{key:"ctrl",label:"Planilha Controle (analistas)",enc:"latin1"},{key:"ga",label:"Relatório G.A — Gestor de Ajustes",enc:"ISO-8859-1"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze5125(s.ga,s.ctrl),is5125:true},
-  {id:"7922",name:"Evento 7922",group:"Eventos",icon:"📋",desc:"Análise em desenvolvimento",slots:[{key:"file",label:"Planilha do Evento",enc:"UTF-8"}],canRun:s=>s.file?.length>0,run:s=>s.file},
+  {id:"7922",name:"Evento 7922",group:"Eventos",icon:"📋",desc:"Ressarcimento de Ativos (terminais não recuperados) — D297 · Crédito VISA · SLA D+2",
+    slots:[
+      {key:"ajustes",label:"Planilha de Ajustes 7922 (D297)",enc:"UTF-8",allSheets:true},
+      {key:"controle",label:"Controle dos Analistas (Tabulador Consultoria Financeira)",enc:"UTF-8",allSheets:true},
+    ],
+    canRun:s=>!!s.ajustes&&!!s.controle,
+    run:s=>analyze7922(s.ajustes,s.controle),
+    is7922:true},
   {id:"9066",name:"Evento 9066",group:"Eventos",icon:"🔧",desc:"Sinistro · Perda ou Roubo de Maquininha · D+4",slots:[{key:"ctrl",label:"Controle Sinistro (analistas)",enc:"latin1"},{key:"ga",label:"Ajustes G.A",enc:"UTF-8"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze9066(s.ga,s.ctrl),is9066:true},
   {id:"reg-fin",name:"Regularizações Financeiras",group:"Caixas de E-mail",icon:"💼",desc:"Comissão Mínima — MDR incorreto cobrado ao cliente",
     slots:[
@@ -432,7 +651,7 @@ const Login=()=>{
 
 const Sidebar=({activeId,onSelect})=>(<div style={{width:240,background:T.sidebar,flexShrink:0,overflowY:"auto",paddingTop:8}}>{GROUPS.map(g=>(<div key={g}><div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:1.5,padding:"16px 24px 6px",textTransform:"uppercase"}}>{g}</div>{MODULES.filter(m=>m.group===g).map(m=>(<button key={m.id} onClick={()=>onSelect(m.id)} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"10px 24px",border:"none",textAlign:"left",cursor:"pointer",background:activeId===m.id?T.sidebarAccent+"":"transparent",color:activeId===m.id?T.white:T.gray,fontSize:13,fontWeight:activeId===m.id?700:400,borderLeft:activeId===m.id?`3px solid ${T.accent}`:"3px solid transparent"}}><span style={{fontSize:16}}>{m.icon}</span><span>{m.name}</span></button>))}</div>))}</div>);
 
-const UploadZone=({label,count,onFile,enc})=>{const ref=useRef();return(<div onClick={()=>ref.current?.click()} style={{background:T.card,borderRadius:10,border:`1px dashed ${count?T.accent:T.muted}`,padding:"16px 20px",cursor:"pointer"}}><input ref={ref} type="file" accept=".csv,.xlsx,.xlsb,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&loadFile(e.target.files[0],enc,onFile)}/><div style={{fontSize:10,fontWeight:700,color:count?T.accent:T.gray,letterSpacing:.8,marginBottom:4}}>{label.toUpperCase()}</div><div style={{fontSize:12,color:count?T.accent:T.muted}}>{count?`✅ ${count} registros carregados`:"📎 CSV · XLSX · XLSB"}</div></div>);};
+const UploadZone=({label,count,countLabel,onFile,enc,allSheets})=>{const ref=useRef();return(<div onClick={()=>ref.current?.click()} style={{background:T.card,borderRadius:10,border:`1px dashed ${count?T.accent:T.muted}`,padding:"16px 20px",cursor:"pointer"}}><input ref={ref} type="file" accept=".csv,.xlsx,.xlsb,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&(allSheets?loadWorkbookRaw(e.target.files[0],enc,onFile):loadFile(e.target.files[0],enc,onFile))}/><div style={{fontSize:10,fontWeight:700,color:count?T.accent:T.gray,letterSpacing:.8,marginBottom:4}}>{label.toUpperCase()}</div><div style={{fontSize:12,color:count?T.accent:T.muted}}>{count?`✅ ${count} ${countLabel||"registros carregados"}`:"📎 CSV · XLSX · XLSB"}</div></div>);};
 
 const Stat=({label,value,color,icon,active,onClick})=>(<div onClick={onClick} style={{background:active?`${color}22`:T.card,borderRadius:12,padding:"18px 16px",boxShadow:active?`0 0 0 2px ${color},0 4px 16px rgba(0,0,0,.4)`:`0 4px 16px rgba(0,0,0,.4)`,position:"relative",overflow:"hidden",cursor:"pointer",transition:"all .2s"}}><div style={{position:"absolute",top:-10,right:-10,fontSize:48,opacity:.06}}>{icon}</div><div style={{fontSize:30,fontWeight:900,color,lineHeight:1}}>{value}</div><div style={{fontSize:11,color:T.gray,marginTop:6,letterSpacing:.2}}>{label}</div>{active&&<div style={{position:"absolute",bottom:0,left:0,right:0,height:3,background:color,borderRadius:"0 0 12px 12px"}}/>}</div>);
 
@@ -859,11 +1078,11 @@ const ViewComissao=({results})=>{
                       <td style={{padding:"8px 10px",color:T.gray}}>{r.dtTrans||"—"}</td>
                       <td style={{padding:"8px 10px",fontWeight:600,color:T.white}}>{fV(r.vt)}</td>
                       <td style={{padding:"8px 10px",color:T.white}}>{fV(r.vcb)}</td>
-                      <td style={{padding:"8px 10px",color:T.accent,fontWeight:700}}>{r.taxaCorreta!==null?`${r.taxaCorreta}%`:"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.accent,fontWeight:700}}>{fP(r.taxaCorreta)}</td>
                       <td style={{padding:"8px 10px"}}>{r.taxaOrigem==='EC'?<span style={{background:"rgba(0,230,118,.15)",color:T.success,padding:"2px 7px",borderRadius:10,fontSize:9,fontWeight:700}}>EC</span>:r.taxaOrigem==='PADRAO'?<span style={{background:"rgba(179,136,255,.15)",color:T.purple,padding:"2px 7px",borderRadius:10,fontSize:9,fontWeight:700}}>PADRÃO</span>:<span style={{color:T.muted}}>—</span>}</td>
                       <td style={{padding:"8px 10px",color:T.accent}}>{r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"}</td>
                       <td style={{padding:"8px 10px",fontWeight:700,color:r.difSistema>0?T.warning:T.success}}>{r.difSistema!==null?fV(r.difSistema):"—"}</td>
-                      <td style={{padding:"8px 10px",color:r.taxaMatch===false?T.danger:T.gray}}>{r.taxaAnal!==null?`${r.taxaAnal}%`:"—"}</td>
+                      <td style={{padding:"8px 10px",color:r.taxaMatch===false?T.danger:T.gray}}>{fP(r.taxaAnal)}</td>
                       <td style={{padding:"8px 10px",color:T.gray}}>{r.comissaoAnal!==null?fV(r.comissaoAnal):"—"}</td>
                       <td style={{padding:"8px 10px",color:r.difMatch===false?T.danger:T.gray}}>{r.difAnal!==null?fV(r.difAnal):"—"}</td>
                       <td style={{padding:"8px 10px"}}>{r.taxaMatch===true?<span style={{color:T.success}}>✅</span>:r.taxaMatch===false?<span style={{color:T.danger}}>❌</span>:<span style={{color:T.muted}}>—</span>}</td>
@@ -872,8 +1091,8 @@ const ViewComissao=({results})=>{
                     {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={15} style={{padding:"12px 16px"}}>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
                         {[["EC",r.ec],["Número RO",r.ro||"—"],["Percentual Desconto Cobrado",`${r.pctDesc}%`],["Parcelas",r.parcelas||"À vista"],
-                          ["Taxa Sistema",r.taxaCorreta!==null?`${r.taxaCorreta}%`:"Não encontrada"],["Origem da Taxa",r.taxaOrigem==='EC'?"✅ Tarifa específica do EC":r.taxaOrigem==='PADRAO'?"❔ Tabela padrão (EC não cadastrado)":"—"],["Comissão Sistema",r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"],["Estorno Sistema",r.difSistema!==null?fV(r.difSistema):"—"],
-                          ["Taxa Analista",r.taxaAnal!==null?`${r.taxaAnal}%`:"—"],["Comissão Analista",r.comissaoAnal!==null?fV(r.comissaoAnal):"—"],["Estorno Analista",r.difAnal!==null?fV(r.difAnal):"—"],
+                          ["Taxa Sistema",r.taxaCorreta!==null?fP(r.taxaCorreta):"Não encontrada"],["Origem da Taxa",r.taxaOrigem==='EC'?"✅ Tarifa específica do EC":r.taxaOrigem==='PADRAO'?"❔ Tabela padrão (EC não cadastrado)":"—"],["Comissão Sistema",r.comissaoCorreta!==null?fV(r.comissaoCorreta):"—"],["Estorno Sistema",r.difSistema!==null?fV(r.difSistema):"—"],
+                          ["Taxa Analista",r.taxaAnal!==null?fP(r.taxaAnal):"—"],["Comissão Analista",r.comissaoAnal!==null?fV(r.comissaoAnal):"—"],["Estorno Analista",r.difAnal!==null?fV(r.difAnal):"—"],
                           ["Taxa correta?",r.taxaMatch===true?"✅ Sim":r.taxaMatch===false?"❌ Não":"—"],["Cálculo correto?",r.difMatch===true?"✅ Sim":r.difMatch===false?"❌ Não":"—"]
                         ].map(([l,v])=>(
                           <div key={l} style={{background:T.card,padding:"9px 12px",borderRadius:8,border:`1px solid ${T.border}`}}>
@@ -885,7 +1104,7 @@ const ViewComissao=({results})=>{
                       {!r.taxaMatch&&r.taxaCorreta!==null&&r.taxaAnal!==null&&(
                         <div style={{marginTop:10,padding:"10px 14px",background:"rgba(255,82,82,.1)",borderRadius:8,border:"1px solid rgba(255,82,82,.3)",fontSize:12}}>
                           <strong style={{color:"#ff5252"}}>⚠️ Taxa incorreta:</strong>
-                          <span style={{color:T.gray,marginLeft:8}}>Analista usou <strong style={{color:T.white}}>{r.taxaAnal}%</strong> mas a taxa correta é <strong style={{color:T.accent}}>{r.taxaCorreta}%</strong> para <strong style={{color:T.white}}>{r.produto}</strong>{r.parcelas>1?` em ${r.parcelas}x`:''}.</span>
+                          <span style={{color:T.gray,marginLeft:8}}>Analista usou <strong style={{color:T.white}}>{fP(r.taxaAnal)}</strong> mas a taxa correta é <strong style={{color:T.accent}}>{fP(r.taxaCorreta)}</strong> para <strong style={{color:T.white}}>{r.produto}</strong>{r.parcelas>1?` em ${r.parcelas}x`:''}.</span>
                           <span style={{color:T.warning,marginLeft:8}}>Diferença no estorno: {fV(Math.abs(r.difSistema-r.difAnal))}</span>
                         </div>
                       )}
@@ -902,6 +1121,178 @@ const ViewComissao=({results})=>{
   </div>);
 };
 
+const View7922=({results})=>{
+  const{procedentes,porMotivo,ajustesDup}=results;
+  const[tab,setTab]=useState("procedente");
+  const[search,setSearch]=useState("");
+  const[onlyIssues,setOnlyIssues]=useState(false);
+  const[expanded,setExpanded]=useState(null);
+  const[openMotivo,setOpenMotivo]=useState(null);
+
+  const stats=useMemo(()=>({
+    totalProc:procedentes.length,
+    ok:procedentes.filter(r=>r.ok).length,
+    pend:procedentes.filter(r=>!r.ok).length,
+    semAjuste:procedentes.filter(r=>r.issues.includes("SEM_AJUSTE_D297")).length,
+    bandeiraErrada:procedentes.filter(r=>r.issues.includes("BANDEIRA_ERRADA")).length,
+    foraD2:procedentes.filter(r=>r.issues.includes("FORA_D2")).length,
+    totalImproc:porMotivo.reduce((s,m)=>s+m.itens.length,0),
+  }),[procedentes,porMotivo]);
+
+  const shownProc=useMemo(()=>{
+    let r=procedentes;
+    if(onlyIssues) r=r.filter(x=>!x.ok);
+    if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.protocolo.includes(s)||x.ec.includes(s)||x.analista.toLowerCase().includes(s));}
+    return r;
+  },[procedentes,search,onlyIssues]);
+
+  const TH=({c})=><th style={{padding:"9px 10px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
+
+  const exportProc=()=>{
+    const out=procedentes.map(r=>({"Protocolo":r.protocolo,"EC":r.ec,"Analista":r.analista,"Data Finalizada":fD(r.dtFinalizada),"Bandeira":r.match?.bandeira||"—","D+2 (dias úteis)":r.bd??"—","Número RO":r.match?.ro||"—","Valor":r.match?.valor??"—","Observação (ajuste)":r.match?.obs||"—","Pendências":r.issues.join(", ")||"OK"}));
+    const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Procedente");XLSX.writeFile(wb,`evento7922_procedente_${TODAY}.xlsx`);
+  };
+  const exportImproc=()=>{
+    const out=porMotivo.flatMap(m=>m.itens.map(i=>({"Motivo":m.motivo,"Protocolo":i.protocolo,"EC":i.ec,"Analista":i.analista,"Motivo (original)":i.motivoW,"Observação":i.obsX})));
+    const ws=XLSX.utils.json_to_sheet(out);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Improcedente");XLSX.writeFile(wb,`evento7922_improcedente_${TODAY}.xlsx`);
+  };
+
+  return(<div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:20}}>
+      {[[stats.totalProc,"Procedentes",T.accent,"📊"],[stats.ok,"OK (bandeira + D+2)",T.success,"✅"],[stats.pend,"Com pendência",T.danger,"⚠️"],[stats.semAjuste,"Sem ajuste D297",T.purple,"❔"],[stats.foraD2,"Fora do D+2",T.warning,"⏰"],[stats.totalImproc,"Improcedentes",T.gray,"🚫"]].map(([v,l,clr,ic])=>(
+        <Stat key={l} label={l} value={v} color={clr} icon={ic}/>
+      ))}
+    </div>
+
+    {ajustesDup.length>0&&(
+      <div style={{marginBottom:16,padding:"12px 16px",background:"rgba(255,171,64,.08)",border:`1px solid ${T.warning}`,borderRadius:10,fontSize:12}}>
+        <strong style={{color:T.warning}}>⚠ {ajustesDup.length} ajuste(s) D297 com Número RO + Valor + EC duplicados</strong>
+        <span style={{color:T.gray,marginLeft:8}}>Risco de crédito em duplicidade — as linhas afetadas estão marcadas na aba Procedente.</span>
+      </div>
+    )}
+
+    <div style={{display:"flex",gap:2,marginBottom:16,borderBottom:`1px solid ${T.border}`}}>
+      {[["procedente",`✅ Procedente (${procedentes.length})`],["improcedente",`🚫 Improcedente (${stats.totalImproc})`]].map(([id,label])=>(
+        <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",background:"transparent",border:"none",cursor:"pointer",fontSize:12,fontWeight:tab===id?700:400,color:tab===id?T.accent:T.gray,borderBottom:tab===id?`2px solid ${T.accent}`:"2px solid transparent",marginBottom:-1}}>
+          {label}
+        </button>
+      ))}
+      <div style={{flex:1}}/>
+      <button onClick={tab==="procedente"?exportProc:exportImproc} style={{padding:"8px 18px",background:T.accent,color:"#0a1628",border:"none",borderRadius:50,fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:4}}>⬇ Exportar</button>
+    </div>
+
+    {tab==="procedente"&&(
+      <div>
+        <div style={{marginBottom:10,padding:"10px 14px",background:T.card,borderRadius:8,border:`1px solid ${T.border}`,fontSize:12,color:T.gray}}>
+          Pra cada protocolo Procedente, cruza pelo EC com a planilha de ajustes D297 e valida: crédito na bandeira <strong style={{color:T.white}}>VISA</strong>, ajuste criado em até <strong style={{color:T.white}}>D+2 dias úteis</strong> após a Data Finalizada (feriados desconsiderados), e ausência de duplicidade (Nº RO + Valor + EC).
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar protocolo, EC, analista…" style={{flex:1,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
+          <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,cursor:"pointer",color:T.gray}}>
+            <input type="checkbox" checked={onlyIssues} onChange={e=>setOnlyIssues(e.target.checked)} style={{accentColor:T.accent}}/>Apenas pendências
+          </label>
+          <span style={{fontSize:12,color:T.muted}}>{shownProc.length}/{procedentes.length}</span>
+        </div>
+        <div style={{background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+          <div style={{overflowX:"auto",maxHeight:"55vh",overflowY:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>
+                {["Protocolo","EC","Analista","Data Finalizada","Bandeira","D+2 (dias úteis)","Nº RO","Valor","Observação","Situação"].map(h=><TH key={h} c={h}/>)}
+              </tr></thead>
+              <tbody>
+                {shownProc.map((r,i)=>(
+                  <>
+                    <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:!r.ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
+                      <td style={{padding:"8px 10px",fontFamily:"monospace",color:T.accent}}>{r.protocolo}</td>
+                      <td style={{padding:"8px 10px",color:T.white}}>{r.ec}</td>
+                      <td style={{padding:"8px 10px",color:T.gray}}>{r.analista}</td>
+                      <td style={{padding:"8px 10px",color:T.gray}}>{fD(r.dtFinalizada)}</td>
+                      <td style={{padding:"8px 10px",color:r.bandeiraOk===false?T.danger:T.white}}>{r.match?.bandeira||"—"}</td>
+                      <td style={{padding:"8px 10px",fontWeight:700,color:r.d2Ok===false?T.danger:r.d2Ok===true?T.success:T.muted}}>{r.bd!==null?`D+${r.bd}`:"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.gray}}>{r.match?.ro||"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.white}}>{r.match?fV(r.match.valor):"—"}</td>
+                      <td style={{padding:"8px 10px",color:T.gray,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.match?.obs||"—"}</td>
+                      <td style={{padding:"8px 10px"}}>{r.ok?<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>:r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{iss.replace(/_/g," ")}</span>)}</td>
+                    </tr>
+                    {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={10} style={{padding:"12px 16px"}}>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
+                        {[["Solicitação",r.match?.solicitacao||"—"],["Tipo de Ajuste",r.match?.tipoAjuste||"—"],["Código + Motivo",r.match?.codigoMotivo||"—"],["Data de Criação (ajuste)",fD(r.match?.dtCriacao)],
+                          ["Bandeira correta?",r.bandeiraOk===true?"✅ Sim (VISA)":r.bandeiraOk===false?`❌ Não (${r.match?.bandeira})`:"—"],["Dentro do D+2?",r.d2Ok===true?"✅ Sim":r.d2Ok===false?"❌ Não":"—"],["Duplicidade?",r.match?.isDup?"⚠️ Sim":"Não"],["Outros ajustes p/ mesmo EC",r.outrosAjustes.length||"—"],
+                        ].map(([l,v])=>(
+                          <div key={l} style={{background:T.card,padding:"9px 12px",borderRadius:8,border:`1px solid ${T.border}`}}>
+                            <div style={{fontSize:9,color:T.muted,marginBottom:3,letterSpacing:.5}}>{l.toUpperCase()}</div>
+                            <div style={{fontWeight:600,color:T.white,fontSize:12}}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {r.issues.includes("SEM_AJUSTE_D297")&&(
+                        <div style={{marginTop:10,padding:"10px 14px",background:"rgba(179,136,255,.1)",borderRadius:8,border:`1px solid ${T.purple}`,fontSize:12}}>
+                          <strong style={{color:T.purple}}>❔ Nenhum ajuste D297 encontrado</strong>
+                          <span style={{color:T.gray,marginLeft:8}}>Não existe, na planilha de ajustes, nenhuma linha D297 pra o EC {r.ec} — confira se o crédito ainda não foi lançado ou se é de outro período/extração.</span>
+                        </div>
+                      )}
+                    </td></tr>)}
+                  </>
+                ))}
+              </tbody>
+            </table>
+            {shownProc.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>Nenhum registro encontrado.</div>}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {tab==="improcedente"&&(
+      <div>
+        <div style={{marginBottom:10,padding:"10px 14px",background:T.card,borderRadius:8,border:`1px solid ${T.border}`,fontSize:12,color:T.gray}}>
+          Agrupado pelo motivo (coluna W do controle) — clique num motivo pra ver o protocolo, EC, analista e a observação (coluna X) de cada caso.
+        </div>
+        {porMotivo.map(m=>(
+          <div key={m.motivo} style={{marginBottom:10,background:T.card,borderRadius:12,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,.4)"}}>
+            <div onClick={()=>setOpenMotivo(openMotivo===m.motivo?null:m.motivo)} style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",cursor:"pointer",background:T.surface}}>
+              <span style={{fontSize:13,fontWeight:700,color:T.white,flex:1}}>{m.motivo}</span>
+              <span style={{background:m.itens.length?"rgba(255,82,82,.15)":T.hover,color:m.itens.length?"#ff5252":T.muted,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:700}}>{m.itens.length}</span>
+              <span style={{color:T.muted,fontSize:12}}>{openMotivo===m.motivo?"▲":"▼"}</span>
+            </div>
+            {openMotivo===m.motivo&&(
+              <div style={{overflowX:"auto",maxHeight:"40vh",overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead style={{position:"sticky",top:0,zIndex:2}}><tr style={{background:T.surface}}>
+                    {["Protocolo","EC","Analista","Motivo (original)","Observação"].map(h=><TH key={h} c={h}/>)}
+                  </tr></thead>
+                  <tbody>
+                    {m.itens.map((it,i)=>(
+                      <tr key={i} style={{background:i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`}}>
+                        <td style={{padding:"8px 10px",fontFamily:"monospace",color:T.accent}}>{it.protocolo}</td>
+                        <td style={{padding:"8px 10px",color:T.white}}>{it.ec}</td>
+                        <td style={{padding:"8px 10px",color:T.gray}}>{it.analista}</td>
+                        <td style={{padding:"8px 10px",color:T.gray}}>{it.motivoW||"—"}</td>
+                        <td style={{padding:"8px 10px",color:T.gray}}>{it.obsX||"—"}</td>
+                      </tr>
+                    ))}
+                    {m.itens.length===0&&<tr><td colSpan={5} style={{textAlign:"center",padding:20,color:T.muted}}>Nenhum caso nesse motivo.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    )}
+  </div>);
+};
+
+// Conta registros de um slot carregado — array normal (loadFile) ou {type:"wb"|"rows",...}
+// (loadWorkbookRaw, usado no Evento 7922, onde o slot guarda o workbook bruto e a aba certa só é
+// escolhida/convertida na hora de Analisar). Pra "wb" mostra nº de abas em vez de linhas, já que
+// contar linhas reais exigiria escanear todas as abas — e é só um indicador visual de "carregou".
+const slotCount=d=>{
+  if(Array.isArray(d)) return d.length;
+  if(d&&d.type==="rows") return d.rows?.length||0;
+  if(d&&d.type==="wb") return d.wb?.SheetNames?.length||0;
+  return 0;
+};
+
 const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
   const mod=MODULE_BY_ID[moduleId];const slotData=files[moduleId]||{};const moduleResults=results[moduleId]||null;
   const setSlot=(key,data)=>setFiles(f=>({...f,[moduleId]:{...f[moduleId],[key]:data}}));
@@ -911,16 +1302,16 @@ const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
     <div style={{marginBottom:24,paddingBottom:16,borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:14}}>
       <span style={{fontSize:28}}>{mod.icon}</span>
       <div><h2 style={{margin:0,fontSize:22,fontWeight:900,color:T.white}}>{mod.name}</h2><p style={{margin:0,fontSize:13,color:T.gray}}>{mod.desc}</p></div>
-      {!mod.is5125&&<span style={{marginLeft:"auto",padding:"4px 14px",background:T.card,borderRadius:20,fontSize:11,color:T.gray,border:`1px solid ${T.border}`}}>Em desenvolvimento</span>}
+      {!mod.is5125&&!mod.is9066&&!mod.isComissao&&!mod.is7922&&<span style={{marginLeft:"auto",padding:"4px 14px",background:T.card,borderRadius:20,fontSize:11,color:T.gray,border:`1px solid ${T.border}`}}>Em desenvolvimento</span>}
     </div>
     <div style={{display:"grid",gridTemplateColumns:`repeat(${mod.slots.length},1fr) auto`,gap:12,alignItems:"end",marginBottom:24}}>
-      {mod.slots.map(s=><UploadZone key={s.key} label={s.label} count={slotData[s.key]?.length||0} onFile={d=>setSlot(s.key,d)} enc={s.enc}/>)}
+      {mod.slots.map(s=><UploadZone key={s.key} label={s.label} count={slotCount(slotData[s.key])} countLabel={s.allSheets?"abas carregadas":undefined} onFile={d=>setSlot(s.key,d)} enc={s.enc} allSheets={s.allSheets}/>)}
       <button onClick={run} disabled={!mod.canRun(slotData)} style={{padding:"0 28px",height:60,border:"none",borderRadius:50,fontSize:13,fontWeight:900,letterSpacing:.5,whiteSpace:"nowrap",background:mod.canRun(slotData)?T.accent:T.muted,color:mod.canRun(slotData)?"#000":T.card,cursor:mod.canRun(slotData)?"pointer":"not-allowed",boxShadow:mod.canRun(slotData)?`0 4px 20px ${T.accent}55`:"none"}}>▶ ANALISAR</button>
     </div>
     {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/>}
-    {moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}{moduleResults&&mod.isComissao&&<ViewComissao results={moduleResults}/>}
-    {moduleResults&&!mod.is5125&&!mod.is9066&&!mod.isComissao&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
-    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):mod.is9066?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue o Controle Sinistro e os Ajustes G.A</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Código 984 · ✔ Número lógico · ✔ Bandeira VISA · ✔ Valor · ✔ SLA D+4 úteis · ✔ Feriados excluídos</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
+    {moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}{moduleResults&&mod.isComissao&&<ViewComissao results={moduleResults}/>}{moduleResults&&mod.is7922&&<View7922 results={moduleResults}/>}
+    {moduleResults&&!mod.is5125&&!mod.is9066&&!mod.isComissao&&!mod.is7922&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
+    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):mod.is9066?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue o Controle Sinistro e os Ajustes G.A</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Código 984 · ✔ Número lógico · ✔ Bandeira VISA · ✔ Valor · ✔ SLA D+4 úteis · ✔ Feriados excluídos</p></>):mod.is7922?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue a Planilha de Ajustes 7922 e o Controle dos Analistas</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Filtra D297 · ✔ Bandeira VISA · ✔ SLA D+2 úteis · ✔ Duplicidade RO+Valor+EC · ✔ Motivos de improcedência</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
   </div>);
 };
 
