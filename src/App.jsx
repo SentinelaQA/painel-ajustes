@@ -313,16 +313,42 @@ function parseSIEFile(rawRows){
     .filter(r=>Object.values(r).some(v=>v!==''&&v!=null));
 }
 
+// Acha a coluna de autorização em qualquer variação de nome que a Cielo usa nos exports
+// ("Autorização", "Código Autorização (Transação)", "Cód. Autorização"...) — antes o código
+// buscava só a chave literal "Autorização"/"Autorizacao", e quando a planilha vinha com o nome
+// completo "Código Autorização (Transação)" (caso real do EC 1013749003) o cruzamento SIE x
+// Analista dava 0 pares em TODAS as linhas, fazendo 100% delas caírem como "sem analista" e o
+// total do sistema não bater com o da planilha do analista por nenhum motivo de cálculo real.
+const getAuthVal=row=>{
+  const rk=Object.keys(row);
+  const key=rk.find(k=>normStr(k).includes('autoriza'));
+  return key?String(row[key]).trim():'';
+};
+// Código de Autorização sozinho NÃO é único no período todo — o mesmo número curto se repete em
+// transações bem diferentes meses depois (ex real do EC 1013749003: auth "29141" aparece em uma
+// venda débito de R$5 em dez/25 E numa venda crédito de R$16,98 em fev/26). Auth+RO ainda deixava
+// uma pequena fração colidindo (~0,015% das linhas); adicionando o Valor da Transação como 3º
+// componente a chave fica 100% única nos dois arquivos reais testados — sem essa combinação o
+// cruzamento pareava a linha errada da planilha do analista silenciosamente, gerando falsas
+// divergências de taxa/cálculo em centenas de transações que na verdade estavam corretas.
+const joinKey=(auth,ro,valor)=>`${auth}|${ro}|${valor}`;
+// Normaliza o valor pra 2 casas decimais fixas antes de entrar na chave, pra não deixar diferença
+// de formatação/precisão de ponto flutuante entre os dois arquivos (16.98 vs "16,98" vs 16.980000001)
+// quebrar o casamento por engano.
+const valKey=v=>(Math.round(pV(v)*100)/100).toFixed(2);
+
 function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
   const taxaMap=buildTaxaMap(taxasRaw);
   const sieRows=parseSIEFile(sieRaw).filter(r=>{
     const flag=String(getCol(r,'Flag MDR Mínimo','Flag MDR','FLAG MDR MÍNIMO')||'').trim().toLowerCase();
     return flag==='sim';
   });
-  const analByAuth={};
+  const analByKey={};
   analRaw.forEach(r=>{
-    const auth=String(r['Autorização']||r['Autorizacao']||'').trim();
-    if(auth) analByAuth[auth]=r;
+    const auth=getAuthVal(r);
+    const ro=String(getCol(r,'Número RO')||'').trim();
+    const valor=valKey(getCol(r,'Valor da Transação','Valor da Transacao'));
+    if(auth) analByKey[joinKey(auth,ro,valor)]=r;
   });
   const rows=sieRows.map(r=>{
     const produto=String(getCol(r,'Produto cielo','Produto Cielo')||'').trim();
@@ -330,14 +356,14 @@ function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
     const vt=pV(String(getCol(r,'Valor da Transação','Valor da Transacao')||0));
     const vcb=pV(String(getCol(r,'Valor Comissão Bruta','Valor Comissao Bruta')||0));
     const pctDesc=pV(String(getCol(r,'Percentual de Desconto')||0));
-    const auth=String(getCol(r,'Código Autorização (Transação)','Codigo Autorizacao')||'').trim();
+    const auth=getAuthVal(r);
     const dtTrans=getCol(r,'Data da Transação','Data da Transacao');
     const ec=String(getCol(r,'Número do EC','EC')||'').trim();
     const ro=String(getCol(r,'Número RO')||'').trim();
     const{taxa:taxaCorreta,origem:taxaOrigem}=getTaxaCorreta(produto,parcelas,ec,taxaMap);
     const comissaoCorreta=taxaCorreta!==null?Math.round(vt*(taxaCorreta/100)*10000)/10000:null;
     const difSistema=comissaoCorreta!==null?Math.round((vcb-comissaoCorreta)*10000)/10000:null;
-    const anal=analByAuth[auth]||null;
+    const anal=analByKey[joinKey(auth,ro,valKey(vt))]||null;
     const taxaAnal=anal?pV(String(anal['Taxa %']||anal['Taxa%']||0)):null;
     const comissaoAnal=anal?pV(String(anal['Comissão']||anal['Comissao']||0)):null;
     const difAnal=anal?pV(String(anal['Diferença']||anal['Diferenca']||0)):null;
@@ -368,12 +394,14 @@ function analyzeComissaoMinima(sieRaw,analRaw,taxasRaw){
   // Reconciliação com a planilha do analista: linhas que existem lá mas não têm par no SIE
   // filtrado (Flag=Sim) — é isso que explica o total do sistema não bater com o total do
   // analista mesmo quando toda linha comparada está OK.
-  const matchedAuths=new Set(rows.map(r=>r.auth));
+  const matchedKeys=new Set(rows.map(r=>joinKey(r.auth,r.ro,valKey(r.vt))));
   const analTotalGeral=Math.round(analRaw.reduce((s,r)=>s+pV(String(r['Diferença']||r['Diferenca']||0)),0)*10000)/10000;
   const analOnly=analRaw.map(r=>{
-    const auth=String(r['Autorização']||r['Autorizacao']||'').trim();
-    return{auth,r};
-  }).filter(({auth})=>auth&&!matchedAuths.has(auth)).map(({auth,r})=>({
+    const auth=getAuthVal(r);
+    const ro=String(getCol(r,'Número RO')||'').trim();
+    const valor=valKey(getCol(r,'Valor da Transação','Valor da Transacao'));
+    return{auth,ro,valor,r};
+  }).filter(({auth,ro,valor})=>auth&&!matchedKeys.has(joinKey(auth,ro,valor))).map(({auth,r})=>({
     auth,
     ec:String(r['EC']||r['Número do EC']||'').trim(),
     produto:String(r['Produto cielo']||r['Produto Cielo']||'').trim(),
