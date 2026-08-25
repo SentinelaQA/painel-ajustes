@@ -1128,6 +1128,7 @@ const View7922=({results})=>{
   const[onlyIssues,setOnlyIssues]=useState(false);
   const[expanded,setExpanded]=useState(null);
   const[openMotivo,setOpenMotivo]=useState(null);
+  const[activeFilter,setActiveFilter]=useState(null);
 
   const stats=useMemo(()=>({
     totalProc:procedentes.length,
@@ -1139,12 +1140,24 @@ const View7922=({results})=>{
     totalImproc:porMotivo.reduce((s,m)=>s+m.itens.length,0),
   }),[procedentes,porMotivo]);
 
+  // Cards do topo são clicáveis: cada um leva pra aba certa (Procedente/Improcedente) já filtrada
+  // pro recorte que ele representa — clicar de novo no mesmo card volta a mostrar tudo.
+  const goToStat=key=>{
+    if(key==="totalImproc"){setTab("improcedente");setActiveFilter(null);return;}
+    setTab("procedente");
+    setActiveFilter(af=>af===key?null:key);
+  };
+
   const shownProc=useMemo(()=>{
     let r=procedentes;
+    if(activeFilter==="ok") r=r.filter(x=>x.ok);
+    else if(activeFilter==="pend") r=r.filter(x=>!x.ok);
+    else if(activeFilter==="semAjuste") r=r.filter(x=>x.issues.includes("SEM_AJUSTE_D297"));
+    else if(activeFilter==="foraD2") r=r.filter(x=>x.issues.includes("FORA_D2"));
     if(onlyIssues) r=r.filter(x=>!x.ok);
     if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.protocolo.includes(s)||x.ec.includes(s)||x.analista.toLowerCase().includes(s));}
     return r;
-  },[procedentes,search,onlyIssues]);
+  },[procedentes,search,onlyIssues,activeFilter]);
 
   const TH=({c})=><th style={{padding:"9px 10px",textAlign:"left",fontWeight:700,color:T.gray,fontSize:10,letterSpacing:.8,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`}}>{c}</th>;
 
@@ -1159,8 +1172,11 @@ const View7922=({results})=>{
 
   return(<div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:20}}>
-      {[[stats.totalProc,"Procedentes",T.accent,"📊"],[stats.ok,"OK (bandeira + D+2)",T.success,"✅"],[stats.pend,"Com pendência",T.danger,"⚠️"],[stats.semAjuste,"Sem ajuste D297",T.purple,"❔"],[stats.foraD2,"Fora do D+2",T.warning,"⏰"],[stats.totalImproc,"Improcedentes",T.gray,"🚫"]].map(([v,l,clr,ic])=>(
-        <Stat key={l} label={l} value={v} color={clr} icon={ic}/>
+      {[[stats.totalProc,"Procedentes",T.accent,"📊","totalProc"],[stats.ok,"OK (bandeira + D+2)",T.success,"✅","ok"],[stats.pend,"Com pendência",T.danger,"⚠️","pend"],[stats.semAjuste,"Sem ajuste D297",T.purple,"❔","semAjuste"],[stats.foraD2,"Fora do D+2",T.warning,"⏰","foraD2"],[stats.totalImproc,"Improcedentes",T.gray,"🚫","totalImproc"]].map(([v,l,clr,ic,key])=>(
+        <Stat key={l} label={l} value={v} color={clr} icon={ic}
+          active={key==="totalImproc"?tab==="improcedente":tab==="procedente"&&activeFilter===key}
+          onClick={()=>goToStat(key)}
+        />
       ))}
     </div>
 
@@ -1173,7 +1189,7 @@ const View7922=({results})=>{
 
     <div style={{display:"flex",gap:2,marginBottom:16,borderBottom:`1px solid ${T.border}`}}>
       {[["procedente",`✅ Procedente (${procedentes.length})`],["improcedente",`🚫 Improcedente (${stats.totalImproc})`]].map(([id,label])=>(
-        <button key={id} onClick={()=>setTab(id)} style={{padding:"8px 16px",background:"transparent",border:"none",cursor:"pointer",fontSize:12,fontWeight:tab===id?700:400,color:tab===id?T.accent:T.gray,borderBottom:tab===id?`2px solid ${T.accent}`:"2px solid transparent",marginBottom:-1}}>
+        <button key={id} onClick={()=>{setTab(id);setActiveFilter(null);}} style={{padding:"8px 16px",background:"transparent",border:"none",cursor:"pointer",fontSize:12,fontWeight:tab===id?700:400,color:tab===id?T.accent:T.gray,borderBottom:tab===id?`2px solid ${T.accent}`:"2px solid transparent",marginBottom:-1}}>
           {label}
         </button>
       ))}
