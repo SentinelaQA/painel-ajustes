@@ -28,7 +28,15 @@ const T={
 const TODAY=new Date().toISOString().slice(0,10);
 
 const normStr=s=>(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim();
-const getCol=(row,...keys)=>{const rk=Object.keys(row);for(const k of keys){if(row[k]!==undefined&&row[k]!==null&&String(row[k]).trim()!=="")return String(row[k]).trim();const f=rk.find(r=>normStr(r)===normStr(k));if(f&&row[f]!==undefined&&row[f]!==null&&String(row[f]).trim()!=="")return String(row[f]).trim();}return "";};
+// Igual normStr, mas tamb\u00e9m tira qualquer caractere que n\u00e3o seja letra/n\u00famero (sinal de "+",
+// h\u00edfen, pontua\u00e7\u00e3o) e colapsa espa\u00e7os repetidos \u2014 usada especificamente pra comparar NOME DE
+// COLUNA, porque a mesma coluna j\u00e1 apareceu em exports reais da Cielo com pontua\u00e7\u00e3o diferente
+// (achado real: "C\u00f3digo + Motivo de ajuste", com um "+" literal, num export xlsx, e "C\u00f3digo  Motivo
+// de ajuste", com espa\u00e7o duplo e SEM o "+", no export CSV de outro m\u00eas \u2014 mesma coluna, grafia
+// diferente). Sem essa normaliza\u00e7\u00e3o mais solta, o cabe\u00e7alho n\u00e3o batia e a planilha inteira era
+// descartada como se n\u00e3o tivesse a coluna nenhuma.
+const normHeader=s=>normStr(s).replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+const getCol=(row,...keys)=>{const rk=Object.keys(row);for(const k of keys){if(row[k]!==undefined&&row[k]!==null&&String(row[k]).trim()!=="")return String(row[k]).trim();const f=rk.find(r=>normHeader(r)===normHeader(k));if(f&&row[f]!==undefined&&row[f]!==null&&String(row[f]).trim()!=="")return String(row[f]).trim();}return "";};
 const getIdx=(row,i)=>{const v=Object.values(row)[i];return v!==undefined&&v!==null?String(v).trim():"";};
 const parseD=s=>{if(!s)return null;s=String(s).trim();if(/^\d{2}\/\d{2}\/\d{4}/.test(s)){const[d,m,y]=s.split("/");return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);return null;};
 const parseAny=v=>{if(!v&&v!==0)return null;const s=String(v).trim();if(!s)return null;const d=parseD(s);if(d)return d;const n=parseFloat(s);if(!isNaN(n)&&n>40000&&n<60000){try{const dt=new Date(Math.floor((n-25569)*86400*1000));if(!isNaN(dt.getTime()))return dt.toISOString().slice(0,10);}catch(e){}}const dm=s.match(/(\d{2}\/\d{2}\/\d{4})/);if(dm)return parseD(dm[1]);try{const dt=new Date(s);if(!isNaN(dt.getTime())){const iso=dt.toISOString().slice(0,10);if(iso>="2000-01-01"&&iso<="2035-12-31")return iso;}}catch(e){}return null;};
@@ -487,8 +495,8 @@ const sheetToJsonFast=ws=>{
 };
 
 const headerMatches=(keys,requiredHeaders)=>requiredHeaders.every(h=>{
-  const nh=normStr(h);
-  return keys.some(k=>k===nh||(nh.length>=6&&k.includes(nh)));
+  const nh=normHeader(h);
+  return keys.some(k=>{const nk=normHeader(k);return nk===nh||(nh.length>=6&&nk.includes(nh));});
 });
 
 // Acha, num workbook, a MELHOR aba cujo cabeçalho contenha as colunas pedidas — só lê o cabeçalho
@@ -539,9 +547,9 @@ const findRowsAcross=(dataList,requiredHeaders,preferName)=>{
 // de compartilhar) e mandar aqui pra gente achar a causa exata (aba errada, coluna com nome
 // diferente etc.) sem a planilha nunca precisar sair do ambiente controlado.
 const checkHeaders=(colunas,requeridas)=>{
-  const keys=(colunas||[]).map(normStr);
+  const keys=(colunas||[]).map(normHeader);
   const faltando=(requeridas||[]).filter(h=>{
-    const nh=normStr(h);
+    const nh=normHeader(h);
     return !keys.some(k=>k===nh||(nh.length>=6&&k.includes(nh)));
   });
   return{ok:faltando.length===0,faltando};
@@ -701,8 +709,8 @@ const MODULES=[
   {id:"5125",name:"Evento 5125",group:"Eventos",icon:"⚡",desc:"Cancelamento sem saldo · Boleto / PIX",slots:[{key:"ctrl",label:"Planilha Controle (analistas)",enc:"latin1"},{key:"ga",label:"Relatório G.A — Gestor de Ajustes",enc:"ISO-8859-1"}],canRun:s=>s.ctrl?.length>0&&s.ga?.length>0,run:s=>analyze5125(s.ga,s.ctrl),is5125:true},
   {id:"7922",name:"Evento 7922",group:"Eventos",icon:"📋",desc:"Ressarcimento de Ativos (terminais não recuperados) — D297 · Crédito VISA · SLA D+2",
     slots:[
-      {key:"ajustes",label:"Planilha de Ajustes 7922 (D297)",enc:"UTF-8",allSheets:true},
-      {key:"controle",label:"Controle dos Analistas (Tabulador Consultoria Financeira)",enc:"UTF-8",allSheets:true},
+      {key:"ajustes",label:"Planilha de Ajustes 7922 (D297)",enc:"latin1",allSheets:true},
+      {key:"controle",label:"Controle dos Analistas (Tabulador Consultoria Financeira)",enc:"latin1",allSheets:true},
     ],
     canRun:s=>!!s.ajustes&&!!s.controle,
     run:s=>analyze7922(s.ajustes,s.controle),
