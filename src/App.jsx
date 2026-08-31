@@ -530,6 +530,39 @@ const findRowsAcross=(dataList,requiredHeaders,preferName)=>{
   return[];
 };
 
+// Diagnóstico técnico SEM nenhum dado de cliente/transação — só nome de aba, nome de coluna e
+// contagem de linhas. Criado porque a política de proteção de dados da Cielo passou a bloquear o
+// envio das planilhas reais (nem por e-mail nem anexadas aqui), então quando o cruzamento de abas
+// falha (ex "613 de 613 Sem ajuste D297" — sinal de que NENHUMA linha da planilha de ajustes foi
+// encontrada) não dá mais pra investigar rodando o arquivo real fora do navegador; o usuário pode
+// abrir esse painel dentro do próprio ambiente da Cielo, tirar um print (só nomes de coluna, seguro
+// de compartilhar) e mandar aqui pra gente achar a causa exata (aba errada, coluna com nome
+// diferente etc.) sem a planilha nunca precisar sair do ambiente controlado.
+const checkHeaders=(colunas,requeridas)=>{
+  const keys=(colunas||[]).map(normStr);
+  const faltando=(requeridas||[]).filter(h=>{
+    const nh=normStr(h);
+    return !keys.some(k=>k===nh||(nh.length>=6&&k.includes(nh)));
+  });
+  return{ok:faltando.length===0,faltando};
+};
+const diagnosticoSheets=(data,requeridas)=>{
+  if(!data) return[];
+  if(data.type==="rows"){
+    const colunas=Object.keys(data.rows?.[0]||{});
+    return[{aba:"(CSV)",colunas,linhas:data.rows?.length||0,...checkHeaders(colunas,requeridas)}];
+  }
+  if(data.type==="wb"){
+    return(data.wb?.SheetNames||[]).map(name=>{
+      const ws=data.wb.Sheets[name];
+      const colunas=ws&&ws["!ref"]?sheetHeaderRow(ws):[];
+      const linhas=ws?Math.max(sheetLastRow(ws),0):0;
+      return{aba:name,colunas,linhas,...checkHeaders(colunas,requeridas)};
+    });
+  }
+  return[];
+};
+
 // Distância de edição (Levenshtein) — usada só pra tolerar erro de digitação de 1-2 letras numa
 // palavra-chave (ex "conta" em vez de "consta"), não pra parear frases inteiras.
 function levenshtein(a,b){
@@ -568,8 +601,17 @@ function normMotivoImprocedente(m){
 
 function analyze7922(ajustesData,controleData){
   const sources=[ajustesData,controleData];
-  const ajusteRows=findRowsAcross(sources,["EC","Código + Motivo de ajuste","Número RO"]);
-  const controleRows=findRowsAcross(sources,["Protocolo","Procedente/ Improcedente","Estabelecimento"],"7922");
+  const reqAjustes=["EC","Código + Motivo de ajuste","Número RO"];
+  const reqControle=["Protocolo","Procedente/ Improcedente","Estabelecimento"];
+  const ajusteRows=findRowsAcross(sources,reqAjustes);
+  const controleRows=findRowsAcross(sources,reqControle,"7922");
+  // Só nomes de aba/coluna e contagens — nada de dado de cliente/transação (ver diagnosticoSheets).
+  const diag={
+    ajustes:{requeridas:reqAjustes,linhasAchadas:ajusteRows.length,
+      slotAjustes:diagnosticoSheets(ajustesData,reqAjustes),slotControle:diagnosticoSheets(controleData,reqAjustes)},
+    controle:{requeridas:reqControle,linhasAchadas:controleRows.length,
+      slotAjustes:diagnosticoSheets(ajustesData,reqControle),slotControle:diagnosticoSheets(controleData,reqControle)},
+  };
 
   // --- Planilha de Ajustes (crédito D297) ---
   const ajustes=ajusteRows.map(r=>{
@@ -652,7 +694,7 @@ function analyze7922(ajustesData,controleData){
   const improcedentes=controle.filter(c=>c.improcedente).map(c=>({...c,motivoNorm:normMotivoImprocedente(c.motivoW)}));
   const porMotivo=MOTIVOS.map(m=>({motivo:m,itens:improcedentes.filter(i=>i.motivoNorm===m)}));
 
-  return{procedentes,improcedentes,porMotivo,ajustes,ajustesDup:ajustes.filter(a=>a.isDup)};
+  return{procedentes,improcedentes,porMotivo,ajustes,ajustesDup:ajustes.filter(a=>a.isDup),diag};
 }
 
 const MODULES=[
@@ -1188,13 +1230,14 @@ const ViewComissao=({results})=>{
 };
 
 const View7922=({results})=>{
-  const{procedentes,porMotivo,ajustesDup}=results;
+  const{procedentes,porMotivo,ajustesDup,diag}=results;
   const[tab,setTab]=useState("procedente");
   const[search,setSearch]=useState("");
   const[onlyIssues,setOnlyIssues]=useState(false);
   const[expanded,setExpanded]=useState(null);
   const[openMotivo,setOpenMotivo]=useState(null);
   const[activeFilter,setActiveFilter]=useState(null);
+  const[showDiag,setShowDiag]=useState(false);
 
   const stats=useMemo(()=>({
     totalProc:procedentes.length,
@@ -1250,6 +1293,36 @@ const View7922=({results})=>{
       <div style={{marginBottom:16,padding:"12px 16px",background:"rgba(255,171,64,.08)",border:`1px solid ${T.warning}`,borderRadius:10,fontSize:12}}>
         <strong style={{color:T.warning}}>⚠ {ajustesDup.length} ajuste(s) D297 com Número RO + Valor + EC duplicados</strong>
         <span style={{color:T.gray,marginLeft:8}}>Risco de crédito em duplicidade — as linhas afetadas estão marcadas na aba Procedente.</span>
+      </div>
+    )}
+
+    {diag&&(
+      <div style={{marginBottom:16}}>
+        <button onClick={()=>setShowDiag(v=>!v)} style={{padding:"6px 12px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.gray,fontSize:11,cursor:"pointer"}}>
+          {showDiag?"▲":"▼"} Diagnóstico técnico (só nomes de aba/coluna e contagens — sem nenhum dado de cliente, seguro pra print)
+        </button>
+        {showDiag&&(
+          <div style={{marginTop:8,padding:"14px 16px",background:T.card,border:`1px solid ${T.border}`,borderRadius:10,fontSize:11,fontFamily:"monospace",lineHeight:1.7,color:T.gray,overflowX:"auto"}}>
+            {[["Planilha de Ajustes 7922 (D297)",diag.ajustes],["Controle dos Analistas",diag.controle]].map(([label,d])=>(
+              <div key={label} style={{marginBottom:14}}>
+                <div style={{color:T.white,fontWeight:700,marginBottom:4}}>{label} — {d.linhasAchadas} linha(s) encontrada(s)</div>
+                <div style={{marginBottom:6}}>colunas exigidas: {d.requeridas.join(" · ")}</div>
+                {[["Slot 1 (planilha de ajustes carregada)",d.slotAjustes],["Slot 2 (controle carregado)",d.slotControle]].map(([slotLabel,abas])=>(
+                  <div key={slotLabel} style={{marginBottom:6,paddingLeft:10,borderLeft:`2px solid ${T.border}`}}>
+                    <div style={{color:T.accent}}>{slotLabel}:</div>
+                    {abas.length===0&&<div>— nenhum arquivo neste slot —</div>}
+                    {abas.map(a=>(
+                      <div key={a.aba} style={{marginBottom:2}}>
+                        aba "{a.aba}" ({a.linhas} linhas) — {a.ok?<span style={{color:T.success}}>✓ colunas OK</span>:<span style={{color:T.danger}}>✗ faltando: {a.faltando.join(", ")}</span>}
+                        <div style={{color:T.muted,paddingLeft:14}}>colunas encontradas: {a.colunas.filter(Boolean).join(" · ")||"(vazio)"}</div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )}
 
