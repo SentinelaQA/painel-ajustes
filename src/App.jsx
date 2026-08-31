@@ -687,13 +687,22 @@ function analyze7922(ajustesData,controleData){
     const d2Ok=bd===null?null:(bd>=0&&bd<=2);
     const bandeiraOk=match?match.isVisa:null;
     const issues=[];
-    if(!match) issues.push("SEM_AJUSTE_D297");
-    else{
-      if(bandeiraOk===false) issues.push("BANDEIRA_ERRADA");
-      if(d2Ok===false) issues.push("FORA_D2");
-      if(match.isDup) issues.push("DUPLICIDADE");
+    // Quando ainda não achou o crédito C297, isso só é problema de verdade (atraso) se já passou
+    // do prazo de D+2 dias úteis contado da Data Finalizada — antes disso o crédito simplesmente
+    // ainda não foi lançado, o que é normal e correto, não uma pendência (ex: um evento finalizado
+    // em 27/08 ainda está dentro do prazo de dois dias úteis em 31/08 — não é atraso).
+    let situacao="ok";
+    const prazo=c.dtFinalizada?addBiz(c.dtFinalizada,2):null;
+    if(!match){
+      const dentroDoPrazo=prazo?TODAY<=prazo:null;
+      if(dentroDoPrazo===true) situacao="aguardando";
+      else{situacao="pendencia";issues.push("SEM_AJUSTE_D297");}
+    }else{
+      if(bandeiraOk===false){situacao="pendencia";issues.push("BANDEIRA_ERRADA");}
+      if(d2Ok===false){situacao="pendencia";issues.push("FORA_D2");}
+      if(match.isDup){situacao="pendencia";issues.push("DUPLICIDADE");}
     }
-    return{...c,match,outrosAjustes:cands.length>1?cands:[],bd,d2Ok,bandeiraOk,issues,ok:issues.length===0};
+    return{...c,match,outrosAjustes:cands.length>1?cands:[],bd,d2Ok,bandeiraOk,issues,situacao,prazo,ok:situacao==="ok"};
   });
 
   // --- IMPROCEDENTE: agrupa pela coluna W (Motivo se Improcedente) nos 4 baldes + Outros,
@@ -1237,6 +1246,7 @@ const ViewComissao=({results})=>{
   </div>);
 };
 
+const ISSUE_LABELS={SEM_AJUSTE_D297:"ATRASADO (SEM C297)",BANDEIRA_ERRADA:"BANDEIRA ERRADA",FORA_D2:"FORA DO D+2",DUPLICIDADE:"DUPLICIDADE"};
 const View7922=({results})=>{
   const{procedentes,porMotivo,ajustesDup,diag}=results;
   const[tab,setTab]=useState("procedente");
@@ -1249,8 +1259,9 @@ const View7922=({results})=>{
 
   const stats=useMemo(()=>({
     totalProc:procedentes.length,
-    ok:procedentes.filter(r=>r.ok).length,
-    pend:procedentes.filter(r=>!r.ok).length,
+    ok:procedentes.filter(r=>r.situacao==="ok").length,
+    aguardando:procedentes.filter(r=>r.situacao==="aguardando").length,
+    pend:procedentes.filter(r=>r.situacao==="pendencia").length,
     semAjuste:procedentes.filter(r=>r.issues.includes("SEM_AJUSTE_D297")).length,
     bandeiraErrada:procedentes.filter(r=>r.issues.includes("BANDEIRA_ERRADA")).length,
     foraD2:procedentes.filter(r=>r.issues.includes("FORA_D2")).length,
@@ -1267,11 +1278,14 @@ const View7922=({results})=>{
 
   const shownProc=useMemo(()=>{
     let r=procedentes;
-    if(activeFilter==="ok") r=r.filter(x=>x.ok);
-    else if(activeFilter==="pend") r=r.filter(x=>!x.ok);
+    if(activeFilter==="ok") r=r.filter(x=>x.situacao==="ok");
+    else if(activeFilter==="aguardando") r=r.filter(x=>x.situacao==="aguardando");
+    else if(activeFilter==="pend") r=r.filter(x=>x.situacao==="pendencia");
     else if(activeFilter==="semAjuste") r=r.filter(x=>x.issues.includes("SEM_AJUSTE_D297"));
     else if(activeFilter==="foraD2") r=r.filter(x=>x.issues.includes("FORA_D2"));
-    if(onlyIssues) r=r.filter(x=>!x.ok);
+    // "Apenas pendências" mostra só o que é problema de verdade — "aguardando" (ainda dentro do
+    // prazo D+2) não entra aqui, porque não é pendência, é normal.
+    if(onlyIssues) r=r.filter(x=>x.situacao==="pendencia");
     if(search.trim()){const s=search.toLowerCase();r=r.filter(x=>x.protocolo.includes(s)||x.ec.includes(s)||x.analista.toLowerCase().includes(s));}
     return r;
   },[procedentes,search,onlyIssues,activeFilter]);
@@ -1288,8 +1302,8 @@ const View7922=({results})=>{
   };
 
   return(<div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:20}}>
-      {[[stats.totalProc,"Procedentes",T.accent,"📊","totalProc"],[stats.ok,"OK (bandeira + D+2)",T.success,"✅","ok"],[stats.pend,"Com pendência",T.danger,"⚠️","pend"],[stats.semAjuste,"Sem ajuste D297",T.purple,"❔","semAjuste"],[stats.foraD2,"Fora do D+2",T.warning,"⏰","foraD2"],[stats.totalImproc,"Improcedentes",T.gray,"🚫","totalImproc"]].map(([v,l,clr,ic,key])=>(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:10,marginBottom:20}}>
+      {[[stats.totalProc,"Procedentes",T.accent,"📊","totalProc"],[stats.ok,"OK (bandeira + D+2)",T.success,"✅","ok"],[stats.aguardando,"Aguardando C297 (dentro do prazo)",T.purple,"⏳","aguardando"],[stats.pend,"Com pendência",T.danger,"⚠️","pend"],[stats.semAjuste,"Atrasado (sem C297)",T.warning,"⏰","semAjuste"],[stats.foraD2,"Fora do D+2",T.warning,"📅","foraD2"],[stats.totalImproc,"Improcedentes",T.gray,"🚫","totalImproc"]].map(([v,l,clr,ic,key])=>(
         <Stat key={l} label={l} value={v} color={clr} icon={ic}
           active={key==="totalImproc"?tab==="improcedente":tab==="procedente"&&activeFilter===key}
           onClick={()=>goToStat(key)}
@@ -1365,7 +1379,7 @@ const View7922=({results})=>{
               <tbody>
                 {shownProc.map((r,i)=>(
                   <>
-                    <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:!r.ok?"hsl(0,62.8%,8%)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
+                    <tr key={`r${i}`} onClick={()=>setExpanded(expanded===i?null:i)} style={{background:r.situacao==="pendencia"?"hsl(0,62.8%,8%)":r.situacao==="aguardando"?"hsla(262,100%,74%,.06)":i%2===0?T.card:T.hover,borderBottom:`1px solid ${T.border}`,cursor:"pointer"}}>
                       <td style={{padding:"8px 10px",fontFamily:"monospace",color:T.accent}}>{r.protocolo}</td>
                       <td style={{padding:"8px 10px",color:T.white}}>{r.ec}</td>
                       <td style={{padding:"8px 10px",color:T.gray}}>{r.analista}</td>
@@ -1375,7 +1389,11 @@ const View7922=({results})=>{
                       <td style={{padding:"8px 10px",color:T.gray}}>{r.match?.ro||"—"}</td>
                       <td style={{padding:"8px 10px",color:T.white}}>{r.match?fV(r.match.valor):"—"}</td>
                       <td style={{padding:"8px 10px",color:T.gray,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.match?.obs||"—"}</td>
-                      <td style={{padding:"8px 10px"}}>{r.ok?<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>:r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{iss.replace(/_/g," ")}</span>)}</td>
+                      <td style={{padding:"8px 10px"}}>
+                        {r.situacao==="ok"&&<span style={{color:T.success,fontSize:10,fontWeight:700}}>✓ OK</span>}
+                        {r.situacao==="aguardando"&&<span style={{background:"rgba(179,136,255,.15)",color:T.purple,padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700}}>⏳ AGUARDANDO C297</span>}
+                        {r.situacao==="pendencia"&&r.issues.map(iss=><span key={iss} style={{background:"rgba(255,82,82,.15)",color:"#ff5252",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:700,marginRight:2}}>{ISSUE_LABELS[iss]||iss.replace(/_/g," ")}</span>)}
+                      </td>
                     </tr>
                     {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={10} style={{padding:"12px 16px"}}>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
@@ -1388,10 +1406,16 @@ const View7922=({results})=>{
                           </div>
                         ))}
                       </div>
-                      {r.issues.includes("SEM_AJUSTE_D297")&&(
+                      {r.situacao==="aguardando"&&(
                         <div style={{marginTop:10,padding:"10px 14px",background:"rgba(179,136,255,.1)",borderRadius:8,border:`1px solid ${T.purple}`,fontSize:12}}>
-                          <strong style={{color:T.purple}}>❔ Nenhum ajuste D297 encontrado</strong>
-                          <span style={{color:T.gray,marginLeft:8}}>Não existe, na planilha de ajustes, nenhuma linha D297 pra o EC {r.ec} — confira se o crédito ainda não foi lançado ou se é de outro período/extração.</span>
+                          <strong style={{color:T.purple}}>⏳ Aguardando C297</strong>
+                          <span style={{color:T.gray,marginLeft:8}}>Ainda dentro do prazo de D+2 dias úteis (Data Finalizada {fD(r.dtFinalizada)} → prazo até {fD(r.prazo)}) — o crédito C297 simplesmente ainda não foi lançado. Não é pendência.</span>
+                        </div>
+                      )}
+                      {r.issues.includes("SEM_AJUSTE_D297")&&(
+                        <div style={{marginTop:10,padding:"10px 14px",background:"rgba(255,171,64,.1)",borderRadius:8,border:`1px solid ${T.warning}`,fontSize:12}}>
+                          <strong style={{color:T.warning}}>⏰ Atrasado — sem C297 encontrado</strong>
+                          <span style={{color:T.gray,marginLeft:8}}>Passou do prazo de D+2 dias úteis (Data Finalizada {fD(r.dtFinalizada)} → prazo era até {fD(r.prazo)}) e não existe, na planilha de ajustes, nenhuma linha C297/D297 pra o EC {r.ec} — confira se é de outro período/extração.</span>
                         </div>
                       )}
                     </td></tr>)}
