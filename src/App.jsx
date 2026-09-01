@@ -1,8 +1,11 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-import { auth } from "./firebase";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from "firebase/auth";
+import { auth, db, secondaryAuth } from "./firebase";
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from "firebase/firestore";
+
+const ADMIN_EMAIL="yasmincam.melo@gmail.com";
 
 const BR_HOL = new Set(["2025-01-01","2025-04-18","2025-04-21","2025-05-01","2025-06-19","2025-09-07","2025-10-12","2025-11-02","2025-11-15","2025-12-25","2026-01-01","2026-04-03","2026-04-21","2026-05-01","2026-06-04","2026-09-07","2026-10-12","2026-11-02","2026-11-15","2026-12-25","2027-01-01","2027-04-02","2027-04-21","2027-05-01","2027-05-27","2027-09-07","2027-10-12","2027-11-02","2027-11-15","2027-12-25"]);
 const T={
@@ -750,7 +753,11 @@ const Badge=({type})=>{const s=BADGES[type]||BADGES.PEND;return<span style={{dis
 
 const Login=()=>{
   const[email,setEmail]=useState("");const[pass,setPass]=useState("");const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
-  const go=async()=>{if(!email||!pass){setErr("Preencha e-mail e senha.");return;}setBusy(true);setErr("");try{await signInWithEmailAndPassword(auth,email,pass);}catch(e){const m={"auth/invalid-credential":"Credenciais inválidas.","auth/user-not-found":"Usuário não encontrado.","auth/wrong-password":"Senha incorreta.","auth/too-many-requests":"Muitas tentativas. Aguarde."};setErr(m[e.code]||"Erro ao autenticar.");setBusy(false);}};
+  const go=async()=>{if(!email||!pass){setErr("Preencha e-mail e senha.");return;}setBusy(true);setErr("");try{
+    await signInWithEmailAndPassword(auth,email,pass);
+    // Log de acesso pro painel de Admin — não bloqueia o login se a gravação falhar.
+    try{await addDoc(collection(db,"access_logs"),{email,timestamp:serverTimestamp()});}catch(e){}
+  }catch(e){const m={"auth/invalid-credential":"Credenciais inválidas.","auth/user-not-found":"Usuário não encontrado.","auth/wrong-password":"Senha incorreta.","auth/too-many-requests":"Muitas tentativas. Aguarde."};setErr(m[e.code]||"Erro ao autenticar.");setBusy(false);}};
   return(<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:`linear-gradient(135deg,hsl(228,35%,8%) 0%,hsl(228,30%,13%) 100%)`,fontFamily:T.font}}>
   <div style={{width:420,padding:"48px 40px",background:T.surface,borderRadius:20,boxShadow:"0 24px 80px rgba(0,0,0,.6)",border:`1px solid ${T.border}`}}>
     <div style={{textAlign:"center",marginBottom:36}}>
@@ -774,7 +781,12 @@ const Login=()=>{
 </div>);
 };
 
-const Sidebar=({activeId,onSelect})=>(<div style={{width:240,background:T.sidebar,flexShrink:0,overflowY:"auto",paddingTop:8}}>{GROUPS.map(g=>(<div key={g}><div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:1.5,padding:"16px 24px 6px",textTransform:"uppercase"}}>{g}</div>{MODULES.filter(m=>m.group===g).map(m=>(<button key={m.id} onClick={()=>onSelect(m.id)} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"10px 24px",border:"none",textAlign:"left",cursor:"pointer",background:activeId===m.id?T.sidebarAccent+"":"transparent",color:activeId===m.id?T.white:T.gray,fontSize:13,fontWeight:activeId===m.id?700:400,borderLeft:activeId===m.id?`3px solid ${T.accent}`:"3px solid transparent"}}><span style={{fontSize:16}}>{m.icon}</span><span>{m.name}</span></button>))}</div>))}</div>);
+const Sidebar=({activeId,onSelect,isAdmin})=>(<div style={{width:240,background:T.sidebar,flexShrink:0,overflowY:"auto",paddingTop:8}}>{GROUPS.map(g=>(<div key={g}><div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:1.5,padding:"16px 24px 6px",textTransform:"uppercase"}}>{g}</div>{MODULES.filter(m=>m.group===g).map(m=>(<button key={m.id} onClick={()=>onSelect(m.id)} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"10px 24px",border:"none",textAlign:"left",cursor:"pointer",background:activeId===m.id?T.sidebarAccent+"":"transparent",color:activeId===m.id?T.white:T.gray,fontSize:13,fontWeight:activeId===m.id?700:400,borderLeft:activeId===m.id?`3px solid ${T.accent}`:"3px solid transparent"}}><span style={{fontSize:16}}>{m.icon}</span><span>{m.name}</span></button>))}</div>))}
+  {isAdmin&&(<div>
+    <div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:1.5,padding:"16px 24px 6px",textTransform:"uppercase"}}>Administração</div>
+    <button onClick={()=>onSelect("admin")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"10px 24px",border:"none",textAlign:"left",cursor:"pointer",background:activeId==="admin"?T.sidebarAccent+"":"transparent",color:activeId==="admin"?T.white:T.gray,fontSize:13,fontWeight:activeId==="admin"?700:400,borderLeft:activeId==="admin"?`3px solid ${T.accent}`:"3px solid transparent"}}><span style={{fontSize:16}}>🔐</span><span>Admin</span></button>
+  </div>)}
+</div>);
 
 const UploadZone=({label,count,countLabel,onFile,enc,allSheets})=>{const ref=useRef();return(<div onClick={()=>ref.current?.click()} style={{background:T.card,borderRadius:10,border:`1px dashed ${count?T.accent:T.muted}`,padding:"16px 20px",cursor:"pointer"}}><input ref={ref} type="file" accept=".csv,.xlsx,.xlsb,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&(allSheets?loadWorkbookRaw(e.target.files[0],enc,onFile):loadFile(e.target.files[0],enc,onFile))}/><div style={{fontSize:10,fontWeight:700,color:count?T.accent:T.gray,letterSpacing:.8,marginBottom:4}}>{label.toUpperCase()}</div><div style={{fontSize:12,color:count?T.accent:T.muted}}>{count?`✅ ${count} ${countLabel||"registros carregados"}`:"📎 CSV · XLSX · XLSB"}</div></div>);};
 
@@ -1510,6 +1522,105 @@ const Footer=()=>(<div style={{background:T.sidebar,borderTop:`1px solid ${T.bor
   </a>
 </div>);
 
+const fmtTs=ts=>{
+  if(!ts)return"—";
+  try{const d=ts.toDate?ts.toDate():new Date(ts);return d.toLocaleString("pt-BR");}catch(e){return"—";}
+};
+
+const AdminView=({user})=>{
+  const[logs,setLogs]=useState([]);const[loadingLogs,setLoadingLogs]=useState(true);
+  const[users,setUsers]=useState([]);const[loadingUsers,setLoadingUsers]=useState(true);
+  const[newEmail,setNewEmail]=useState("");const[newPass,setNewPass]=useState("");const[creating,setCreating]=useState(false);
+  const[msg,setMsg]=useState(null);
+
+  const loadLogs=async()=>{
+    setLoadingLogs(true);
+    try{
+      const q=query(collection(db,"access_logs"),orderBy("timestamp","desc"),limit(500));
+      const snap=await getDocs(q);
+      setLogs(snap.docs.map(d=>({id:d.id,...d.data()})));
+    }catch(e){setLogs([]);}
+    setLoadingLogs(false);
+  };
+  const loadUsers=async()=>{
+    setLoadingUsers(true);
+    try{
+      const q=query(collection(db,"admin_users"),orderBy("createdAt","desc"));
+      const snap=await getDocs(q);
+      setUsers(snap.docs.map(d=>({id:d.id,...d.data()})));
+    }catch(e){setUsers([]);}
+    setLoadingUsers(false);
+  };
+  useEffect(()=>{loadLogs();loadUsers();},[]);
+
+  // Guarda defensiva — na prática a aba nem aparece no menu pra quem não é admin,
+  // mas se o componente for renderizado de outro jeito, bloqueia aqui também.
+  if(user?.email!==ADMIN_EMAIL){
+    return<div style={{padding:60,textAlign:"center",color:T.muted}}>🔒 Acesso restrito ao administrador.</div>;
+  }
+
+  const createUser=async()=>{
+    setMsg(null);
+    if(!newEmail||!newPass){setMsg({type:"err",text:"Preencha e-mail e senha."});return;}
+    if(newPass.length<6){setMsg({type:"err",text:"A senha precisa ter pelo menos 6 caracteres."});return;}
+    setCreating(true);
+    try{
+      // Cria o usuário numa instância Firebase separada (secondaryAuth) pra não trocar
+      // a sessão logada da admin pelo usuário recém-criado (comportamento padrão do SDK).
+      await createUserWithEmailAndPassword(secondaryAuth,newEmail,newPass);
+      await signOut(secondaryAuth);
+      await addDoc(collection(db,"admin_users"),{email:newEmail,createdAt:serverTimestamp(),createdBy:user.email});
+      setMsg({type:"ok",text:`Usuário ${newEmail} criado com sucesso.`});
+      setNewEmail("");setNewPass("");
+      loadUsers();
+    }catch(e){
+      const m={"auth/email-already-in-use":"Esse e-mail já está cadastrado.","auth/invalid-email":"E-mail inválido.","auth/weak-password":"Senha fraca demais (mínimo 6 caracteres)."};
+      setMsg({type:"err",text:m[e.code]||"Erro ao criar usuário."});
+    }
+    setCreating(false);
+  };
+
+  return(<div style={{padding:"24px 28px",overflowY:"auto",flex:1}}>
+    <h2 style={{fontSize:18,fontWeight:800,marginBottom:4}}>🔐 Administração</h2>
+    <p style={{fontSize:12,color:T.muted,marginBottom:24}}>Área restrita — visível só pra {ADMIN_EMAIL}.</p>
+
+    <div style={{background:T.card,borderRadius:12,padding:"20px 22px",border:`1px solid ${T.border}`,marginBottom:24}}>
+      <h3 style={{fontSize:14,fontWeight:700,marginBottom:14}}>➕ Criar novo usuário</h3>
+      <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <input value={newEmail} onChange={e=>setNewEmail(e.target.value)} placeholder="E-mail" style={{flex:"1 1 220px",padding:"10px 14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
+        <input value={newPass} onChange={e=>setNewPass(e.target.value)} type="password" placeholder="Senha (mín. 6 caracteres)" style={{flex:"1 1 220px",padding:"10px 14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,color:T.white,fontSize:13,outline:"none"}}/>
+        <button onClick={createUser} disabled={creating} style={{padding:"10px 22px",background:creating?T.muted:T.accent,color:"#0a1628",border:"none",borderRadius:50,fontSize:12,fontWeight:800,cursor:creating?"not-allowed":"pointer"}}>{creating?"Criando…":"Criar usuário"}</button>
+      </div>
+      {msg&&<div style={{fontSize:12,fontWeight:600,color:msg.type==="ok"?T.success:T.danger,marginTop:4}}>{msg.type==="ok"?"✅ ":"❌ "}{msg.text}</div>}
+    </div>
+
+    <div style={{background:T.card,borderRadius:12,padding:"20px 22px",border:`1px solid ${T.border}`,marginBottom:24}}>
+      <h3 style={{fontSize:14,fontWeight:700,marginBottom:14}}>👥 Usuários criados por aqui ({users.length})</h3>
+      {loadingUsers?<div style={{color:T.muted,fontSize:12}}>Carregando…</div>:users.length===0?<div style={{color:T.muted,fontSize:12}}>Nenhum usuário criado ainda por este painel.</div>:(
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr style={{borderBottom:`1px solid ${T.border}`}}><th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10,letterSpacing:.5}}>E-MAIL</th><th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10,letterSpacing:.5}}>CRIADO EM</th><th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10,letterSpacing:.5}}>CRIADO POR</th></tr></thead>
+          <tbody>{users.map(u=>(<tr key={u.id} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"6px 8px",color:T.white}}>{u.email}</td><td style={{padding:"6px 8px",color:T.gray}}>{fmtTs(u.createdAt)}</td><td style={{padding:"6px 8px",color:T.gray}}>{u.createdBy||"—"}</td></tr>))}</tbody>
+        </table>
+      )}
+    </div>
+
+    <div style={{background:T.card,borderRadius:12,padding:"20px 22px",border:`1px solid ${T.border}`}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+        <h3 style={{fontSize:14,fontWeight:700}}>📜 Log de acessos ({logs.length})</h3>
+        <button onClick={loadLogs} style={{padding:"5px 14px",background:"transparent",border:`1px solid ${T.border}`,borderRadius:50,color:T.gray,fontSize:11,cursor:"pointer"}}>↻ Atualizar</button>
+      </div>
+      {loadingLogs?<div style={{color:T.muted,fontSize:12}}>Carregando…</div>:logs.length===0?<div style={{color:T.muted,fontSize:12}}>Nenhum acesso registrado ainda.</div>:(
+        <div style={{maxHeight:"50vh",overflowY:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead style={{position:"sticky",top:0,background:T.card}}><tr style={{borderBottom:`1px solid ${T.border}`}}><th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10,letterSpacing:.5}}>E-MAIL</th><th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10,letterSpacing:.5}}>DATA/HORA DO LOGIN</th></tr></thead>
+            <tbody>{logs.map(l=>(<tr key={l.id} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"6px 8px",color:T.white}}>{l.email}</td><td style={{padding:"6px 8px",color:T.gray}}>{fmtTs(l.timestamp)}</td></tr>))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  </div>);
+};
+
 export default function App(){
   const[user,setUser]=useState(null);const[loading,setLoading]=useState(true);
   const[activeModule,setActiveModule]=useState("5125");
@@ -1517,19 +1628,20 @@ export default function App(){
   useEffect(()=>{const u=onAuthStateChanged(auth,u=>{setUser(u);setLoading(false);});return u;},[]);
   if(loading)return<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bg}}><div style={{color:T.accent,fontSize:40,fontWeight:900}}>◈</div></div>;
   if(!user)return<Login/>;
+  const isAdmin=user.email===ADMIN_EMAIL;
   return(<div style={{display:"flex",flexDirection:"column",height:"100vh",fontFamily:T.font,background:T.bg,overflow:"hidden",color:T.white}}>
     <div style={{background:T.sidebar,height:56,display:"flex",alignItems:"center",padding:"0 24px",borderBottom:`1px solid ${T.border}`,flexShrink:0,zIndex:10}}>
       <div style={{display:"flex",alignItems:"center",gap:10,fontWeight:900,fontSize:15}}><span style={{color:T.accent,fontSize:20}}>◈</span><span>Painel de Ajustes</span></div>
       <div style={{margin:"0 16px",color:T.border}}>|</div>
-      <div style={{fontSize:12,color:T.muted}}>{MODULE_BY_ID[activeModule]?.name}</div>
+      <div style={{fontSize:12,color:T.muted}}>{activeModule==="admin"?"Administração":MODULE_BY_ID[activeModule]?.name}</div>
       <div style={{flex:1}}/>
       <div style={{fontSize:11,color:T.muted,marginRight:16}}>{user.email}</div>
       <button onClick={()=>{signOut(auth);setFiles({});setResults({});}} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.gray,padding:"6px 16px",borderRadius:50,fontSize:11,cursor:"pointer",fontWeight:700}}>Sair</button>
     </div>
     <div style={{display:"flex",flex:1,overflow:"hidden"}}>
-      <Sidebar activeId={activeModule} onSelect={setActiveModule}/>
+      <Sidebar activeId={activeModule} onSelect={setActiveModule} isAdmin={isAdmin}/>
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-        <ModuleContent moduleId={activeModule} files={files} setFiles={setFiles} results={results} setResults={setResults}/>
+        {activeModule==="admin"?<AdminView user={user}/>:<ModuleContent moduleId={activeModule} files={files} setFiles={setFiles} results={results} setResults={setResults}/>}
         <Footer/>
       </div>
     </div>
