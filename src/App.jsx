@@ -5,7 +5,7 @@ import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWith
 import { auth, db, secondaryAuth } from "./firebase";
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from "firebase/firestore";
 
-const ADMIN_EMAIL="yasmincam.melo@gmail.com";
+const ADMIN_EMAIL="ymcampos@stefanini.com";
 
 const BR_HOL = new Set(["2025-01-01","2025-04-18","2025-04-21","2025-05-01","2025-06-19","2025-09-07","2025-10-12","2025-11-02","2025-11-15","2025-12-25","2026-01-01","2026-04-03","2026-04-21","2026-05-01","2026-06-04","2026-09-07","2026-10-12","2026-11-02","2026-11-15","2026-12-25","2027-01-01","2027-04-02","2027-04-21","2027-05-01","2027-05-27","2027-09-07","2027-10-12","2027-11-02","2027-11-15","2027-12-25"]);
 const T={
