@@ -634,24 +634,29 @@ function analyze7922(ajustesData,controleData){
     const valor=pV(String(getCol(r,"Valor total do ajuste")||0));
     const ro=String(getCol(r,"Número RO","Numero RO")||"").trim();
     const obs=String(getCol(r,"Observações","Observacoes")||"").trim();
-    // A Observação começa com um número de referência do estorno (ex "00889227 - Estorno
-    // Cobranca de Ativo - OUTUBRO DE 2022", às vezes separado por "|" em vez de "-") — não é o
-    // número lógico da máquina, é o identificador que diferencia dois ajustes que por coincidência
-    // têm o mesmo RO + Valor + EC (mesmo cliente, mesmo valor padrão, meses diferentes de cobrança).
-    const obsRef=(obs.match(/^(\d+)/)||[])[1]||"";
+    // O "Lógico" que a analista usa pra validar duplicidade é o número que abre a Observação
+    // (ex: "00728984 - Estorno Cobranca de Ativo - JUNHO DE 2026") — não a coluna separada
+    // "Número lógico" da planilha, que vem sempre vazia nos exports reais da Cielo (confirmado
+    // com o arquivo de agosto: 0 de 6.819 linhas preenchidas). Duplicidade de verdade é EC +
+    // Número RO + Valor + esse número da Observação repetidos juntos.
+    const logico=(obs.match(/^(\d+)/)||[])[1]||"";
     const dtCriacao=parseAny(getCol(r,"Data de criação","Data de criacao"));
     const solicitacao=String(getCol(r,"Solicitação","Solicitacao")||"").trim();
     const tipoAjuste=String(getCol(r,"Tipo de ajuste")||"").trim();
-    return{solicitacao,ec,codigoMotivo,is297,bandeira,isVisa,valor,ro,obs,obsRef,dtCriacao,tipoAjuste};
+    return{solicitacao,ec,codigoMotivo,is297,bandeira,isVisa,valor,ro,logico,obs,dtCriacao,tipoAjuste};
   }).filter(a=>a.is297);
 
-  // Duplicidade: mesma combinação de Número RO (X) + Valor (Q) + EC (E) *e* mesma referência da
-  // Observação (M) aparecendo mais de uma vez. RO+Valor+EC sozinhos dão falso positivo quando o
-  // mesmo cliente tem duas cobranças D297 de meses diferentes com o mesmo RO/valor — só é
-  // duplicidade de verdade quando a referência da Observação também é igual.
-  const dupKeyCount={};
-  ajustes.forEach(a=>{const k=`${a.ro}|${a.valor}|${a.ec}|${a.obsRef}`;dupKeyCount[k]=(dupKeyCount[k]||0)+1;});
-  ajustes.forEach(a=>{a.isDup=dupKeyCount[`${a.ro}|${a.valor}|${a.ec}|${a.obsRef}`]>1;});
+  // Duplicidade: mesma combinação de EC + Número RO + Valor + Lógico aparecendo mais de uma vez
+  // na planilha de ajustes — os 4 campos que a analista confere manualmente pra decidir se é o
+  // mesmo crédito lançado duas vezes ou dois ajustes legítimos e diferentes.
+  const ajustesKeyOf=a=>`${a.ec}|${a.ro}|${a.valor}|${a.logico}`;
+  const ajustesKeyMap={};
+  ajustes.forEach(a=>{const k=ajustesKeyOf(a);(ajustesKeyMap[k]=ajustesKeyMap[k]||[]).push(a);});
+  ajustes.forEach(a=>{
+    const grupo=ajustesKeyMap[ajustesKeyOf(a)];
+    a.isDup=grupo.length>1;
+    a.dupGroupDetail=a.isDup?grupo.map(g=>({ec:g.ec,ro:g.ro,valor:g.valor,logico:g.logico,dtCriacao:g.dtCriacao,solicitacao:g.solicitacao,codigoMotivo:g.codigoMotivo})):[];
+  });
 
   const ajustesByEc={};
   ajustes.forEach(a=>{(ajustesByEc[a.ec]=ajustesByEc[a.ec]||[]).push(a);});
@@ -1268,6 +1273,20 @@ const View7922=({results})=>{
   const[openMotivo,setOpenMotivo]=useState(null);
   const[activeFilter,setActiveFilter]=useState(null);
   const[showDiag,setShowDiag]=useState(false);
+  const[showDupDetail,setShowDupDetail]=useState(false);
+
+  // Grupos de duplicidade únicos (cada ajuste duplicado aparece uma vez por linha da planilha —
+  // aqui agrupa pra mostrar cada combinação EC+RO+Valor+Lógico só uma vez, com todas as linhas dela).
+  const dupGrupos=useMemo(()=>{
+    const seen=new Set();const out=[];
+    ajustesDup.forEach(a=>{
+      const k=`${a.ec}|${a.ro}|${a.valor}|${a.logico}`;
+      if(seen.has(k))return;
+      seen.add(k);
+      out.push({ec:a.ec,ro:a.ro,valor:a.valor,logico:a.logico,itens:a.dupGroupDetail});
+    });
+    return out;
+  },[ajustesDup]);
 
   const stats=useMemo(()=>({
     totalProc:procedentes.length,
@@ -1325,8 +1344,39 @@ const View7922=({results})=>{
 
     {ajustesDup.length>0&&(
       <div style={{marginBottom:16,padding:"12px 16px",background:"rgba(255,171,64,.08)",border:`1px solid ${T.warning}`,borderRadius:10,fontSize:12}}>
-        <strong style={{color:T.warning}}>⚠ {ajustesDup.length} ajuste(s) D297 com Número RO + Valor + EC duplicados</strong>
-        <span style={{color:T.gray,marginLeft:8}}>Risco de crédito em duplicidade — as linhas afetadas estão marcadas na aba Procedente.</span>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}} onClick={()=>setShowDupDetail(v=>!v)}>
+          <div>
+            <strong style={{color:T.warning}}>⚠ {ajustesDup.length} ajuste(s) D297 com EC + RO + Valor + Lógico duplicados</strong>
+            <span style={{color:T.gray,marginLeft:8}}>Risco de crédito em duplicidade — as linhas afetadas estão marcadas na aba Procedente.</span>
+          </div>
+          <span style={{color:T.warning,fontSize:11}}>{showDupDetail?"▲ ocultar":"▼ ver EC + RO + Valor + Lógico"}</span>
+        </div>
+        {showDupDetail&&(
+          <div style={{marginTop:12,overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>EC</th>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>Nº RO</th>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>Valor</th>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>Nº Lógico</th>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>Data de criação</th>
+                <th style={{textAlign:"left",padding:"6px 8px",color:T.gray,fontSize:10}}>Solicitação</th>
+              </tr></thead>
+              <tbody>
+                {dupGrupos.map((g,gi)=>g.itens.map((it,ii)=>(
+                  <tr key={`${gi}-${ii}`} style={{borderBottom:ii===g.itens.length-1?`1px solid ${T.border}`:"none",background:gi%2===0?"transparent":"rgba(255,255,255,.02)"}}>
+                    <td style={{padding:"5px 8px",color:T.white}}>{it.ec}</td>
+                    <td style={{padding:"5px 8px",color:T.gray}}>{it.ro||"—"}</td>
+                    <td style={{padding:"5px 8px",color:T.white}}>{fV(it.valor)}</td>
+                    <td style={{padding:"5px 8px",color:it.logico?T.white:T.muted,fontFamily:"monospace"}}>{it.logico||"(vazio)"}</td>
+                    <td style={{padding:"5px 8px",color:T.gray}}>{fD(it.dtCriacao)}</td>
+                    <td style={{padding:"5px 8px",color:T.gray}}>{it.solicitacao||"—"}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     )}
 
@@ -1409,7 +1459,7 @@ const View7922=({results})=>{
                     </tr>
                     {expanded===i&&(<tr key={`e${i}`} style={{background:T.bg}}><td colSpan={10} style={{padding:"12px 16px"}}>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,fontSize:11}}>
-                        {[["Solicitação",r.match?.solicitacao||"—"],["Tipo de Ajuste",r.match?.tipoAjuste||"—"],["Código + Motivo",r.match?.codigoMotivo||"—"],["Data de Criação (ajuste)",fD(r.match?.dtCriacao)],
+                        {[["Solicitação",r.match?.solicitacao||"—"],["Tipo de Ajuste",r.match?.tipoAjuste||"—"],["Código + Motivo",r.match?.codigoMotivo||"—"],["Nº Lógico",r.match?.logico||"—"],["Data de Criação (ajuste)",fD(r.match?.dtCriacao)],
                           ["Bandeira correta?",r.bandeiraOk===true?"✅ Sim (VISA)":r.bandeiraOk===false?`❌ Não (${r.match?.bandeira})`:"—"],["Dentro do D+2?",r.d2Ok===true?"✅ Sim":r.d2Ok===false?"❌ Não":"—"],["Duplicidade?",r.match?.isDup?"⚠️ Sim":"Não"],["Outros ajustes p/ mesmo EC",r.outrosAjustes.length||"—"],
                         ].map(([l,v])=>(
                           <div key={l} style={{background:T.card,padding:"9px 12px",borderRadius:8,border:`1px solid ${T.border}`}}>
@@ -1418,6 +1468,24 @@ const View7922=({results})=>{
                           </div>
                         ))}
                       </div>
+                      {r.match?.isDup&&r.match?.dupGroupDetail?.length>0&&(
+                        <div style={{marginTop:10,padding:"10px 14px",background:"rgba(255,82,82,.08)",borderRadius:8,border:`1px solid ${T.danger}`,fontSize:12}}>
+                          <strong style={{color:T.danger}}>⚠️ Grupo de duplicidade (EC + RO + Valor + Lógico iguais)</strong>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:8}}>
+                            <thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>EC</th>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>Nº RO</th>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>Valor</th>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>Nº Lógico</th>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>Data de criação</th>
+                              <th style={{textAlign:"left",padding:"4px 6px",color:T.gray,fontSize:9}}>Solicitação</th>
+                            </tr></thead>
+                            <tbody>{r.match.dupGroupDetail.map((it,di)=>(
+                              <tr key={di}><td style={{padding:"4px 6px",color:T.white}}>{it.ec}</td><td style={{padding:"4px 6px",color:T.gray}}>{it.ro||"—"}</td><td style={{padding:"4px 6px",color:T.white}}>{fV(it.valor)}</td><td style={{padding:"4px 6px",color:T.white,fontFamily:"monospace"}}>{it.logico||"(vazio)"}</td><td style={{padding:"4px 6px",color:T.gray}}>{fD(it.dtCriacao)}</td><td style={{padding:"4px 6px",color:T.gray}}>{it.solicitacao||"—"}</td></tr>
+                            ))}</tbody>
+                          </table>
+                        </div>
+                      )}
                       {r.situacao==="aguardando"&&(
                         <div style={{marginTop:10,padding:"10px 14px",background:"rgba(179,136,255,.1)",borderRadius:8,border:`1px solid ${T.purple}`,fontSize:12}}>
                           <strong style={{color:T.purple}}>⏳ Aguardando C297</strong>
@@ -1510,7 +1578,7 @@ const ModuleContent=({moduleId,files,setFiles,results,setResults})=>{
     {moduleResults&&mod.is5125&&<View5125 results={moduleResults} onExport={export5125}/>}
     {moduleResults&&mod.is9066&&<View9066 results={moduleResults}/>}{moduleResults&&mod.isComissao&&<ViewComissao results={moduleResults}/>}{moduleResults&&mod.is7922&&<View7922 results={moduleResults}/>}
     {moduleResults&&!mod.is5125&&!mod.is9066&&!mod.isComissao&&!mod.is7922&&<GenericTable data={moduleResults} moduleId={moduleId}/>}
-    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):mod.is9066?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue o Controle Sinistro e os Ajustes G.A</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Código 984 · ✔ Número lógico · ✔ Bandeira VISA · ✔ Valor · ✔ SLA D+4 úteis · ✔ Feriados excluídos</p></>):mod.is7922?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue a Planilha de Ajustes 7922 e o Controle dos Analistas</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Filtra D297 · ✔ Bandeira VISA · ✔ SLA D+2 úteis · ✔ Duplicidade RO+Valor+EC · ✔ Motivos de improcedência</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
+    {!moduleResults&&(<div style={{textAlign:"center",padding:"72px 24px",color:T.muted}}><div style={{fontSize:56,marginBottom:20}}>{mod.icon}</div>{mod.is5125?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue as planilhas e clique em Analisar</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Cancelamentos duplicados · ✔ SLA BCK: D+2 após CAN · ✔ CAN Tardio: informativo · ✔ Feriados 2025–2027</p></>):mod.is9066?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue o Controle Sinistro e os Ajustes G.A</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Código 984 · ✔ Número lógico · ✔ Bandeira VISA · ✔ Valor · ✔ SLA D+4 úteis · ✔ Feriados excluídos</p></>):mod.is7922?(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 12px"}}>Carregue a Planilha de Ajustes 7922 e o Controle dos Analistas</p><p style={{fontSize:12,margin:0,lineHeight:2,color:T.muted}}>✔ Filtra D297 · ✔ Bandeira VISA · ✔ SLA D+2 úteis · ✔ Duplicidade EC+RO+Valor+Lógico · ✔ Motivos de improcedência</p></>):(<><p style={{fontSize:15,fontWeight:700,color:T.gray,margin:"0 0 8px"}}>Carregue o arquivo para visualizar os dados</p><p style={{fontSize:12,color:T.muted}}>Análise personalizada em breve</p></>)}</div>)}
   </div>);
 };
 
